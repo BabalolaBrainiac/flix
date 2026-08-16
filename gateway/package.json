@@ -1,0 +1,19 @@
+{
+  "name": "flix-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "type-check": "tsc --noEmit",
+    "types": "wrangler types",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241022.0",
+    "@types/node": "^22.8.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.3",
+    "wrangler": "^3.83.0"
+  }
+}

@@ -1,0 +1,16 @@
+pub mod cli_download;
+pub mod cli_playback;
+pub mod cli_search;
+pub mod config;
+pub mod desktop;
+pub mod episode_queue;
+pub mod library;
+pub mod media;
+pub mod meta;
+pub mod playback;
+pub mod player;
+pub mod session;
+pub mod stream_server;
+pub mod stremio;
+pub mod subtitles;
+pub mod tui;

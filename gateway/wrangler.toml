@@ -1,0 +1,18 @@
+name = "flix-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-08-15"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "flix-gateway"
+database_id = "flix-gateway-d1"
+migrations_dir = "migrations"
+
+[durable_objects]
+bindings = [
+  { name = "OPENSUBTITLES_COORDINATOR", class_name = "OpenSubtitlesCoordinator" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["OpenSubtitlesCoordinator"]

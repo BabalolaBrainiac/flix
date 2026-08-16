@@ -1,0 +1,81 @@
+# Secrets and credentials
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.keystore
+credentials.json
+service-account.json
+secrets.json
+.netrc
+
+# Rust build output
+/target/
+**/target/
+*.rs.bk
+*.pdb
+
+# Node dependencies
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Web build output
+# Vite compiles web/src into web/dist. The Rust desktop binary embeds web/dist
+# at compile time, so the directory must exist. Keep it, drop its contents.
+# Do not add a generic dist/ rule. It excludes this directory and blocks .gitkeep.
+/web/dist/*
+!/web/dist/.gitkeep
+/gateway/dist/
+build/
+.vite/
+.svelte-kit/
+*.tsbuildinfo
+
+# Cloudflare Workers local state
+.wrangler/
+.mf/
+.miniflare/
+
+# Local databases
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-journal
+
+# Test and coverage output
+coverage/
+.nyc_output/
+*.lcov
+
+# Logs and temporary files
+*.log
+*.tmp
+tmp/
+temp/
+
+# Editor and OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Project documents. Only README.md goes to the remote.
+*.md
+!/README.md

@@ -113,12 +113,14 @@ fn converts_catalog_items_and_episodes_to_desktop_summaries() {
 
     let ep = Episode {
         id: "tt12345:1:1".to_string(),
+        stream_id: "tt12345:1:1".to_string(),
         title: Some("Pilot".to_string()),
         season: 1,
         episode: 1,
     };
     let ep_summary = EpisodeSummary::from(&ep);
     assert_eq!(ep_summary.id, "tt12345:1:1");
+    assert_eq!(ep_summary.stream_id, "tt12345:1:1");
     assert_eq!(ep_summary.season, 1);
     assert_eq!(ep_summary.episode, 1);
 }
@@ -136,12 +138,14 @@ fn reconstructs_episode_queue_seed() {
         episodes: vec![
             EpisodeSummary {
                 id: "tt12345:1:1".to_string(),
+                stream_id: "tt12345:1:1".to_string(),
                 title: Some("Pilot".to_string()),
                 season: 1,
                 episode: 1,
             },
             EpisodeSummary {
                 id: "tt12345:1:2".to_string(),
+                stream_id: "tt12345:1:2".to_string(),
                 title: Some("Episode 2".to_string()),
                 season: 1,
                 episode: 2,

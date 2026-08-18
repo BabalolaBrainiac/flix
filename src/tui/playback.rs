@@ -64,19 +64,16 @@ impl App {
         };
         let ipc_socket = matches!(selected.kind, PlayerKind::Mpv)
             .then(|| std::env::temp_dir().join(format!("flix-{}.sock", std::process::id())));
-        let subtitle_url = prepared
+        let subtitle_files = prepared
             .preparation
             .subtitle
             .as_ref()
-            .map(|path| path.to_string_lossy().into_owned());
-        let options = PlaybackOptions {
-            title: prepared.file.name.clone(),
-            subtitle_url,
-            start_at: None,
-            ipc_socket: ipc_socket.clone(),
-            show_output: false,
-            file_length: prepared.file.length,
-        };
+            .map(|path| path.to_string_lossy().into_owned())
+            .into_iter()
+            .collect();
+        let options = PlaybackOptions::new(prepared.file.name.clone(), prepared.file.length)
+            .with_subtitles(subtitle_files)
+            .with_ipc_socket(ipc_socket.clone());
         self.player = Some(player::launch(selected, &stream_url, &options)?);
         self.active_file_index = Some(prepared.file.index);
         if let Some(socket) = ipc_socket {

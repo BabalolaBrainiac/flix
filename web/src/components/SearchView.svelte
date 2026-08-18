@@ -87,7 +87,7 @@
     showMoreSources = false;
     try {
       const mediaType = selectedItem?.is_anime ? 'anime' : 'series';
-      const streamRes = await getStreams(mediaType, episode.id);
+      const streamRes = await getStreams(mediaType, episode.stream_id || episode.id);
       streams = streamRes.streams;
     } catch (e: any) {
       actionMessage = `Failed to load streams: ${e.message}`;

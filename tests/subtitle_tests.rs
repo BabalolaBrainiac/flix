@@ -34,28 +34,131 @@ fn ignores_subtitle_results_without_a_file_id() {
         .contains('\u{1b}'));
 }
 
+fn player_args(kind: PlayerKind, options: &PlaybackOptions) -> Vec<String> {
+    let player = Player {
+        kind,
+        path: PathBuf::from("player"),
+        version: None,
+    };
+    command(&player, "http://127.0.0.1/video", options)
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
 #[test]
 fn players_receive_the_subtitle_file() {
-    let options = PlaybackOptions {
-        title: "Episode".to_string(),
-        subtitle_url: Some("/tmp/episode.srt".to_string()),
-        start_at: None,
-        ipc_socket: None,
-        show_output: false,
-        file_length: 1_000_000_000,
-    };
+    let options = PlaybackOptions::new("Episode".to_string(), 1_000_000_000)
+        .with_subtitles(vec!["/tmp/episode.srt".to_string()]);
     for kind in [PlayerKind::Mpv, PlayerKind::Vlc] {
-        let player = Player {
-            kind,
-            path: PathBuf::from("player"),
-            version: None,
-        };
-        let args: Vec<String> = command(&player, "http://127.0.0.1/video", &options)
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
+        let args = player_args(kind, &options);
         assert!(args.iter().any(|arg| arg == "--sub-file=/tmp/episode.srt"));
     }
+}
+
+#[test]
+fn players_prefer_english_audio_and_subtitles() {
+    let options = PlaybackOptions::new("Episode".to_string(), 1_000_000_000);
+    assert_eq!(options.languages, vec!["eng", "en", "english"]);
+
+    let mpv = player_args(PlayerKind::Mpv, &options);
+    assert!(mpv.iter().any(|arg| arg == "--alang=eng,en,english"));
+    assert!(mpv.iter().any(|arg| arg == "--slang=eng,en,english"));
+
+    let vlc = player_args(PlayerKind::Vlc, &options);
+    assert!(vlc
+        .iter()
+        .any(|arg| arg == "--audio-language=eng,en,english"));
+    assert!(vlc.iter().any(|arg| arg == "--sub-language=eng,en,english"));
+}
+
+#[test]
+fn every_subtitle_becomes_a_player_track() {
+    let options = PlaybackOptions::new("Episode".to_string(), 1_000_000_000).with_subtitles(vec![
+        "/tmp/one.srt".to_string(),
+        "/tmp/two.srt".to_string(),
+        "/tmp/name with space.srt".to_string(),
+    ]);
+
+    // mpv takes one `--sub-file` for each track.
+    let mpv = player_args(PlayerKind::Mpv, &options);
+    assert_eq!(
+        mpv.iter()
+            .filter(|arg| arg.starts_with("--sub-file="))
+            .count(),
+        3
+    );
+
+    // VLC takes the first track directly and the rest as input slaves.
+    let vlc = player_args(PlayerKind::Vlc, &options);
+    assert!(vlc.iter().any(|arg| arg == "--sub-file=/tmp/one.srt"));
+    let slaves = vlc
+        .iter()
+        .find(|arg| arg.starts_with("--input-slave="))
+        .expect("input slave argument");
+    assert_eq!(
+        slaves,
+        "--input-slave=file:///tmp/two.srt#file:///tmp/name%20with%20space.srt"
+    );
+}
+
+#[test]
+fn a_single_subtitle_needs_no_input_slave() {
+    let options = PlaybackOptions::new("Episode".to_string(), 1_000_000_000)
+        .with_subtitles(vec!["/tmp/one.srt".to_string()]);
+
+    let vlc = player_args(PlayerKind::Vlc, &options);
+    assert!(!vlc.iter().any(|arg| arg.starts_with("--input-slave=")));
+}
+
+#[tokio::test]
+async fn lists_every_cached_english_subtitle_for_one_video() {
+    let directory = tempfile::tempdir().expect("temporary data directory");
+    let hash = "0123456789012345678901234567890123456789";
+    let subtitle_dir = directory.path().join("subtitles");
+    std::fs::create_dir_all(&subtitle_dir).expect("subtitle directory");
+    for name in [
+        // OpenSubtitles download, Stremio download, and the legacy name.
+        "0123456789012345678901234567890123456789.2.42.en.srt",
+        "0123456789012345678901234567890123456789.2.stremio.en.srt",
+        "0123456789012345678901234567890123456789.2.en.srt",
+    ] {
+        std::fs::write(subtitle_dir.join(name), b"1\n").expect("subtitle file");
+    }
+    // Another video of the same torrent, and an unfinished download.
+    std::fs::write(
+        subtitle_dir.join("0123456789012345678901234567890123456789.21.en.srt"),
+        b"1\n",
+    )
+    .expect("other subtitle file");
+    std::fs::write(
+        subtitle_dir.join("0123456789012345678901234567890123456789.2.7.en.part"),
+        b"1\n",
+    )
+    .expect("partial subtitle file");
+
+    let cached = flix::subtitles::cached_english_subtitles(directory.path(), hash, 2)
+        .await
+        .expect("subtitle cache scan");
+
+    assert_eq!(cached.len(), 3);
+    assert!(cached
+        .iter()
+        .all(|path| path.to_string_lossy().contains(".2.")));
+}
+
+#[tokio::test]
+async fn an_empty_subtitle_cache_returns_no_file() {
+    let directory = tempfile::tempdir().expect("temporary data directory");
+    let cached = flix::subtitles::cached_english_subtitles(
+        directory.path(),
+        "0123456789012345678901234567890123456789",
+        0,
+    )
+    .await
+    .expect("subtitle cache scan");
+
+    assert!(cached.is_empty());
 }
 
 #[tokio::test]

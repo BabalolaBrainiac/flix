@@ -40,7 +40,8 @@ pub struct SubtitleResult {
 }
 
 pub struct SubtitleOptions {
-    pub cached: Option<PathBuf>,
+    /// Subtitle files already on disk for this video, most preferred first.
+    pub cached: Vec<PathBuf>,
     pub results: Vec<SubtitleResult>,
 }
 
@@ -101,24 +102,33 @@ pub async fn english_subtitle_options(
     file_index: usize,
     file_name: &str,
 ) -> Result<SubtitleOptions> {
-    let destination = subtitle_destination(data_dir, info_hash, file_index)?;
-    if existing_file(&destination).await? {
+    let cached = cached_english_subtitles(data_dir, info_hash, file_index).await?;
+    if !cached.is_empty() {
         return Ok(SubtitleOptions {
-            cached: Some(destination),
+            cached,
             results: Vec::new(),
         });
     }
     let Some(client) = OpenSubtitlesClient::from_env(data_dir)? else {
         return Ok(SubtitleOptions {
-            cached: None,
+            cached: Vec::new(),
             results: Vec::new(),
         });
     };
     let query = SubtitleQuery::for_file(file_name, "en");
     Ok(SubtitleOptions {
-        cached: None,
+        cached: Vec::new(),
         results: client.search(&query).await?,
     })
+}
+
+/// Lists every English subtitle already downloaded for one torrent video.
+pub async fn cached_english_subtitles(
+    data_dir: &Path,
+    info_hash: &str,
+    file_index: usize,
+) -> Result<Vec<PathBuf>> {
+    scan_cached_subtitles(&data_dir.join("subtitles"), info_hash, file_index).await
 }
 
 pub async fn download_english_subtitle(
@@ -197,9 +207,9 @@ impl OpenSubtitlesClient {
         file_index: usize,
         file_name: &str,
     ) -> Result<Option<PathBuf>> {
-        let destination = subtitle_destination_from_dir(&self.subtitle_dir, info_hash, file_index)?;
-        if existing_file(&destination).await? {
-            return Ok(Some(destination));
+        let cached = scan_cached_subtitles(&self.subtitle_dir, info_hash, file_index).await?;
+        if let Some(path) = cached.into_iter().next() {
+            return Ok(Some(path));
         }
         let query = SubtitleQuery::for_file(file_name, "en");
         let Some(result) = self.search(&query).await?.into_iter().next() else {
@@ -211,7 +221,8 @@ impl OpenSubtitlesClient {
     }
 
     async fn download(&self, info_hash: &str, file_index: usize, file_id: u64) -> Result<PathBuf> {
-        let destination = subtitle_destination_from_dir(&self.subtitle_dir, info_hash, file_index)?;
+        let destination =
+            subtitle_destination_from_dir(&self.subtitle_dir, info_hash, file_index, file_id)?;
         if existing_file(&destination).await? {
             return Ok(destination);
         }
@@ -329,23 +340,62 @@ impl OpenSubtitlesClient {
     }
 }
 
-fn subtitle_destination(data_dir: &Path, info_hash: &str, file_index: usize) -> Result<PathBuf> {
-    subtitle_destination_from_dir(&data_dir.join("subtitles"), info_hash, file_index)
-}
-
 fn subtitle_destination_from_dir(
     subtitle_dir: &Path,
     info_hash: &str,
     file_index: usize,
+    file_id: u64,
 ) -> Result<PathBuf> {
+    let prefix = subtitle_prefix(info_hash, file_index)?;
+    Ok(subtitle_dir.join(format!("{prefix}{file_id}.en.srt")))
+}
+
+/// Builds the shared name prefix of every subtitle file for one torrent video.
+fn subtitle_prefix(info_hash: &str, file_index: usize) -> Result<String> {
     if info_hash.len() != 40 || !info_hash.chars().all(|value| value.is_ascii_hexdigit()) {
         return Err(anyhow!("Torrent info hash is invalid"));
     }
-    Ok(subtitle_dir.join(format!(
-        "{}.{}.en.srt",
+    Ok(format!(
+        "{}.{}.",
         info_hash.to_ascii_lowercase(),
         file_index
-    )))
+    ))
+}
+
+/// Finds every non-empty English subtitle file that belongs to one torrent
+/// video. The names of subtitles from OpenSubtitles and from Stremio share the
+/// same prefix, so one scan collects both.
+async fn scan_cached_subtitles(
+    subtitle_dir: &Path,
+    info_hash: &str,
+    file_index: usize,
+) -> Result<Vec<PathBuf>> {
+    let prefix = subtitle_prefix(info_hash, file_index)?;
+    let mut entries = match tokio::fs::read_dir(subtitle_dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error).context("Failed to read the subtitle cache"),
+    };
+    let mut found = Vec::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .context("Failed to read a subtitle cache entry")?
+    {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(&prefix) || !name.ends_with(".en.srt") {
+            continue;
+        }
+        let path = entry.path();
+        if existing_file(&path).await? {
+            found.push(path);
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 async fn write_subtitle(partial: &Path, destination: &Path, bytes: &[u8]) -> Result<()> {

@@ -44,6 +44,8 @@ pub struct EpisodesCommand {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EpisodeSummary {
     pub id: String,
+    #[serde(default)]
+    pub stream_id: String,
     pub title: Option<String>,
     pub season: u32,
     pub episode: u32,
@@ -53,6 +55,7 @@ impl From<&Episode> for EpisodeSummary {
     fn from(episode: &Episode) -> Self {
         Self {
             id: episode.id.clone(),
+            stream_id: episode.stream_id.clone(),
             title: episode.title.clone(),
             season: episode.season,
             episode: episode.episode,

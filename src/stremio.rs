@@ -39,6 +39,7 @@ pub struct CatalogItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Episode {
     pub id: String,
+    pub stream_id: String,
     pub title: Option<String>,
     pub season: u32,
     pub episode: u32,
@@ -106,6 +107,11 @@ struct EpisodeRecord {
     title: Option<String>,
     season: Option<u32>,
     episode: Option<u32>,
+    imdb_id: Option<String>,
+    #[serde(rename = "imdbSeason")]
+    imdb_season: Option<u32>,
+    #[serde(rename = "imdbEpisode")]
+    imdb_episode: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -175,8 +181,12 @@ pub fn parse_meta_response(value: Value) -> Result<Vec<Episode>> {
         .videos
         .into_iter()
         .filter_map(|record| {
+            let stream_id = imdb_episode_stream_id(&record);
+            let id = valid_content_id(&record.id).then_some(record.id)?;
+            let stream_id = stream_id.unwrap_or_else(|| id.clone());
             Some(Episode {
-                id: valid_content_id(&record.id).then_some(record.id)?,
+                id,
+                stream_id,
                 title: record.title.map(|value| sanitize_text(&value, 200)),
                 season: record.season?,
                 episode: record.episode?,
@@ -455,7 +465,18 @@ impl StremioClient {
             media_type
         };
         let url = resource_url(&self.stream_base, "stream", stream_type, id)?;
-        parse_stream_response(self.get_json(url, "stream").await?)
+        let mut last_error = None;
+        for attempt in 0..3 {
+            match self.get_json(url.clone(), "stream").await {
+                Ok(value) => return parse_stream_response(value),
+                Err(error) if attempt < 2 && is_transient_stream_error(&error) => {
+                    last_error = Some(error);
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.expect("stream retry recorded an error"))
     }
 
     async fn anime_subtitles(&self, id: &str) -> Result<Vec<StremioSubtitle>> {
@@ -611,6 +632,25 @@ fn resource_url(
         base.as_str()
     ))
     .context("Failed to build the Stremio resource URL")
+}
+
+fn imdb_episode_stream_id(record: &EpisodeRecord) -> Option<String> {
+    let imdb_id = record.imdb_id.as_deref()?;
+    if !valid_content_id(imdb_id) || !imdb_id.starts_with("tt") {
+        return None;
+    }
+    Some(format!(
+        "{}:{}:{}",
+        imdb_id, record.imdb_season?, record.imdb_episode?
+    ))
+}
+
+fn is_transient_stream_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("status 500")
+        || message.contains("status 502")
+        || message.contains("status 503")
+        || message.contains("status 504")
 }
 
 fn result_from_requests(requests: Vec<(&str, Result<Vec<CatalogItem>>)>) -> SearchResults {

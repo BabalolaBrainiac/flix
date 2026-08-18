@@ -9,7 +9,8 @@ pub struct PlaybackPreparation {
 }
 
 pub struct InteractivePlaybackPreparation {
-    pub cached_subtitle: Option<PathBuf>,
+    /// Subtitle files already on disk, most preferred first.
+    pub cached_subtitles: Vec<PathBuf>,
     pub subtitle_results: Vec<subtitles::SubtitleResult>,
     pub notes: Vec<String>,
 }
@@ -52,7 +53,9 @@ pub async fn prepare_interactive(
     }
     let (open_subtitles_cache, subtitle_results) = match subtitle_result {
         Ok(options) => {
-            if options.cached.is_none() && options.results.is_empty() && !subtitles::is_configured()
+            if options.cached.is_empty()
+                && options.results.is_empty()
+                && !subtitles::is_configured()
             {
                 notes.push("OpenSubtitles is not configured.".to_string());
             }
@@ -60,7 +63,7 @@ pub async fn prepare_interactive(
         }
         Err(error) => {
             notes.push(format!("English subtitle search failed: {error}"));
-            (None, Vec::new())
+            (Vec::new(), Vec::new())
         }
     };
     let stremio_subtitle = match stremio_result {
@@ -70,8 +73,15 @@ pub async fn prepare_interactive(
             None
         }
     };
+    // The Stremio subtitle matches the release most closely, so it goes first.
+    let mut cached_subtitles: Vec<PathBuf> = stremio_subtitle.into_iter().collect();
+    for path in open_subtitles_cache {
+        if !cached_subtitles.contains(&path) {
+            cached_subtitles.push(path);
+        }
+    }
     InteractivePlaybackPreparation {
-        cached_subtitle: stremio_subtitle.or(open_subtitles_cache),
+        cached_subtitles,
         subtitle_results,
         notes,
     }

@@ -113,6 +113,7 @@ Flix selects only the chosen episode for download. It changes this selection whe
 During playback, focus the terminal and use these controls:
 
 - Press `n` to prepare and play the next episode.
+- Press `s` to change to another torrent source of the same title.
 - Press `q` to stop playback and exit.
 
 Flix keeps the current episode open while it prepares the requested next episode. It hides player diagnostics during normal playback. Set `FLIX_PLAYER_LOGS=1` before startup when you need VLC or mpv diagnostics.
@@ -120,9 +121,15 @@ Flix keeps the current episode open while it prepares the requested next episode
 After the player exits, use these actions:
 
 - Press `Enter` or `n` to play the next episode.
+- Press `s` to change to another torrent source of the same title.
 - Press `l` or `b` to show the episode list.
 - Press `r` to replay the current episode.
 - Press `q` to stop the torrent session and exit.
+
+Flix keeps the source list from the search. The `s` action shows that list, so a
+source that does not play does not make you repeat the search. Flix also prints
+a hint when the player closes less than 25 seconds after start, because a source
+that fails usually closes the player at once.
 
 If the magnet link is on the macOS clipboard, run:
 
@@ -149,6 +156,8 @@ Search only the anime catalog:
 ```sh
 flix search --anime "Frieren"
 ```
+
+At each search prompt, press `b` to go back one step and `q` to stop the search. The back action returns from the source list to the episode list. It returns from the episode list to the season list. It returns from the season list to the title list. Flix keeps the results it already loaded, so a back step does not repeat a request.
 
 Flix lists titles, seasons, episodes, and torrent releases. It ranks native 4K releases first. It ranks 1080p releases next. It ranks seed count within the same quality. It does not rank an identified AI upscale as native 4K.
 
@@ -208,9 +217,28 @@ Do not place the key in the repository. Flix works without this key. Missing sco
 
 Letterboxd metadata is optional. Flix reads public JSON-LD data when it adds a new library entry. A Letterboxd error does not stop the torrent.
 
+## Audio language
+
+Many torrent releases hold more than one audio track and mark a track other than
+English as the default. Flix therefore tells the player which language to prefer.
+It passes `--alang` and `--slang` to mpv, and `--audio-language` and
+`--sub-language` to VLC. The default preference is `eng,en,english`.
+
+The player still uses the release default when no track declares one of these
+languages. Change the preference with a comma separated list, most preferred
+first:
+
+```sh
+export FLIX_AUDIO_LANGUAGE=jpn,ja,japanese
+```
+
 ## English subtitles
 
-Flix searches OpenSubtitles for the selected episode. The CLI lists up to 20 English subtitle releases before download. Select one result, or enter `0` to play without an external subtitle. Flix passes the downloaded subtitle to mpv or VLC. Playback continues if subtitle search or download fails.
+Flix searches OpenSubtitles for the selected episode. The CLI lists up to 20 English subtitle releases before download. Select one result, several results as `1,2`, `a` for the top results, or `0` to play without an external subtitle. Flix downloads at most 3 subtitles.
+
+Flix downloads every selected subtitle before it starts the player. It then gives each file to the player as a selectable subtitle track. mpv receives one `--sub-file` option for each track. VLC receives the first track through `--sub-file` and the other tracks through `--input-slave`. The VLC subtitle menu therefore lists every downloaded subtitle. Playback continues if subtitle search or download fails.
+
+Flix reuses subtitles that it downloaded before for the same torrent video. In that case it gives all cached files to the player and does not ask again.
 
 For anime started through `flix search --anime`, Flix first downloads an English subtitle from the Anime Kitsu Stremio subtitle resource. This path does not use the OpenSubtitles account login. Flix uses the OpenSubtitles API as the fallback. Pasted magnets have no Kitsu identifier, so they use the OpenSubtitles path only.
 
@@ -231,7 +259,7 @@ source ./.env
 set +a
 ```
 
-Flix stores completed subtitle files in the `subtitles` data subdirectory. It removes an incomplete subtitle file after a failed write.
+Flix stores completed subtitle files in the `subtitles` data subdirectory. The file name holds the torrent info hash, the video file index, and the subtitle identifier. It removes an incomplete subtitle file after a failed write.
 
 If login returns `401 Unauthorized`, the API key can still return search results, but OpenSubtitles will not issue a download link. Confirm the username and password for the OpenSubtitles.com account. Then update the environment and start a new Flix process. Flix stops login attempts for the current process after one 401 response.
 

@@ -83,12 +83,14 @@ fn desktop_episode_queue_seed_advances_across_season_boundaries() {
         episodes: vec![
             EpisodeSummary {
                 id: "tt10161886:1:6".to_string(),
+                stream_id: "tt10161886:1:6".to_string(),
                 title: Some("For All Time. Always.".to_string()),
                 season: 1,
                 episode: 6,
             },
             EpisodeSummary {
                 id: "tt10161886:2:1".to_string(),
+                stream_id: "tt10161886:2:1".to_string(),
                 title: Some("Ouroboros".to_string()),
                 season: 2,
                 episode: 1,
@@ -109,6 +111,7 @@ fn desktop_episode_queue_seed_advances_across_season_boundaries() {
         .iter()
         .map(|ep| Episode {
             id: ep.id.clone(),
+            stream_id: ep.stream_id.clone(),
             title: ep.title.clone(),
             season: ep.season,
             episode: ep.episode,
@@ -143,6 +146,7 @@ fn serializes_play_command_with_queue_and_alternatives() {
             },
             episodes: vec![EpisodeSummary {
                 id: "tt10161886:1:1".to_string(),
+                stream_id: "tt10161886:1:1".to_string(),
                 title: Some("Glorious Purpose".to_string()),
                 season: 1,
                 episode: 1,

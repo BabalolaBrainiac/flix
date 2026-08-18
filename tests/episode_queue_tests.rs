@@ -4,6 +4,7 @@ use flix::stremio::{CatalogItem, CatalogKind, Episode};
 fn episode(id: &str, season: u32, number: u32) -> Episode {
     Episode {
         id: id.to_string(),
+        stream_id: id.to_string(),
         title: Some(format!("Episode {number}")),
         season,
         episode: number,

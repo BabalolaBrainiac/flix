@@ -13,6 +13,7 @@ export interface SearchResponse {
 
 export interface EpisodeSummary {
   id: string;
+  stream_id?: string;
   title?: string;
   season: number;
   episode: number;
@@ -133,4 +134,3 @@ export interface DiagnosticsReport {
   data_dir: string;
   active_session: boolean;
 }
-

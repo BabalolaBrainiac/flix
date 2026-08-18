@@ -67,7 +67,15 @@ fn parses_episode_ids_for_series_and_anime() {
         "meta": {
             "videos": [
                 {"id": "kitsu:42:1", "title": "Arrival", "season": 1, "episode": 1},
-                {"id": "kitsu:42:2", "title": "Departure", "season": 1, "episode": 2}
+                {
+                    "id": "kitsu:42:2",
+                    "title": "Departure",
+                    "season": 1,
+                    "episode": 2,
+                    "imdb_id": "tt3909224",
+                    "imdbSeason": 4,
+                    "imdbEpisode": 2
+                }
             ]
         }
     });
@@ -75,8 +83,10 @@ fn parses_episode_ids_for_series_and_anime() {
     let episodes = parse_meta_response(value).expect("metadata");
     assert_eq!(episodes.len(), 2);
     assert_eq!(episodes[0].id, "kitsu:42:1");
+    assert_eq!(episodes[0].stream_id, "kitsu:42:1");
     assert_eq!(episodes[0].season, 1);
     assert_eq!(episodes[0].episode, 1);
+    assert_eq!(episodes[1].stream_id, "tt3909224:4:2");
 }
 
 #[test]

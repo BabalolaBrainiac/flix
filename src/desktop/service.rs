@@ -195,14 +195,9 @@ impl DesktopService {
         let managed_player = player::launch(
             selected_player,
             &prepared.url,
-            &PlaybackOptions {
-                title: prepared.title.clone(),
-                subtitle_url: prepared.subtitle_url.clone(),
-                start_at: None,
-                ipc_socket: None,
-                show_output: std::env::var_os("FLIX_PLAYER_LOGS").is_some(),
-                file_length: prepared.file_length,
-            },
+            &PlaybackOptions::new(prepared.title.clone(), prepared.file_length)
+                .with_subtitles(prepared.subtitle_files.clone())
+                .with_show_output(std::env::var_os("FLIX_PLAYER_LOGS").is_some()),
         )?;
 
         let has_next = (position + 1 < videos.len())
@@ -213,7 +208,7 @@ impl DesktopService {
             title: prepared.title.clone(),
             quality: quality.clone(),
             url: prepared.url.clone(),
-            subtitle_url: prepared.subtitle_url.clone(),
+            subtitle_url: prepared.primary_subtitle(),
             file_length: prepared.file_length,
             player_path: player_path.clone(),
             has_next,
@@ -283,14 +278,9 @@ impl DesktopService {
             active.player = player::launch(
                 selected_player,
                 &prepared.url,
-                &PlaybackOptions {
-                    title: prepared.title.clone(),
-                    subtitle_url: prepared.subtitle_url.clone(),
-                    start_at: None,
-                    ipc_socket: None,
-                    show_output: std::env::var_os("FLIX_PLAYER_LOGS").is_some(),
-                    file_length: prepared.file_length,
-                },
+                &PlaybackOptions::new(prepared.title.clone(), prepared.file_length)
+                    .with_subtitles(prepared.subtitle_files.clone())
+                    .with_show_output(std::env::var_os("FLIX_PLAYER_LOGS").is_some()),
             )?;
 
             let has_next = active.has_next_video()
@@ -299,11 +289,12 @@ impl DesktopService {
                     .as_ref()
                     .is_some_and(EpisodeQueue::has_next);
 
+            let subtitle_url = prepared.primary_subtitle();
             let state = PlaybackState::Playing {
                 title: prepared.title.clone(),
                 quality: active.quality.clone(),
                 url: prepared.url,
-                subtitle_url: prepared.subtitle_url,
+                subtitle_url,
                 file_length: prepared.file_length,
                 player_path: active.player_path.clone(),
                 has_next,
@@ -317,7 +308,7 @@ impl DesktopService {
             .as_ref()
             .context("Stremio client is not available")?;
 
-        let streams = client.streams("series", &episode.id).await?;
+        let streams = client.streams("series", &episode.stream_id).await?;
         let candidates = automatic_playback_candidates(&streams);
         let stream = candidates
             .first()
@@ -387,14 +378,9 @@ impl DesktopService {
         active.player = player::launch(
             selected_player,
             &prepared.url,
-            &PlaybackOptions {
-                title: prepared.title.clone(),
-                subtitle_url: prepared.subtitle_url.clone(),
-                start_at: None,
-                ipc_socket: None,
-                show_output: std::env::var_os("FLIX_PLAYER_LOGS").is_some(),
-                file_length: prepared.file_length,
-            },
+            &PlaybackOptions::new(prepared.title.clone(), prepared.file_length)
+                .with_subtitles(prepared.subtitle_files.clone())
+                .with_show_output(std::env::var_os("FLIX_PLAYER_LOGS").is_some()),
         )?;
 
         let has_next = active.has_next_video()
@@ -403,11 +389,12 @@ impl DesktopService {
                 .as_ref()
                 .is_some_and(EpisodeQueue::has_next);
 
+        let subtitle_url = prepared.primary_subtitle();
         let state = PlaybackState::Playing {
             title: prepared.title,
             quality: next_quality,
             url: prepared.url,
-            subtitle_url: prepared.subtitle_url,
+            subtitle_url,
             file_length: prepared.file_length,
             player_path: active.player_path.clone(),
             has_next,
@@ -433,8 +420,16 @@ impl DesktopService {
 struct PreparedPlayback {
     title: String,
     url: String,
-    subtitle_url: Option<String>,
+    /// Subtitle files attached to the player, most preferred first.
+    subtitle_files: Vec<String>,
     file_length: u64,
+}
+
+impl PreparedPlayback {
+    /// The subtitle the player shows first, for the desktop status payload.
+    fn primary_subtitle(&self) -> Option<String> {
+        self.subtitle_files.first().cloned()
+    }
 }
 
 async fn load_torrent(
@@ -482,32 +477,31 @@ async fn prepare_video(
 ) -> Result<PreparedPlayback> {
     let preparation =
         playback::prepare_interactive(session, data_dir, id, video, subtitle_context).await;
-    let selected_subtitle = preparation.subtitle_results.first();
-    let subtitle = if let Some(path) = preparation.cached_subtitle {
-        Some(path)
-    } else if let Some(result) = selected_subtitle {
-        match tokio::time::timeout(
-            Duration::from_secs(25),
-            subtitles::download_english_subtitle(
-                data_dir,
-                &session.info_hash(id)?,
-                video.index,
-                result,
-            ),
-        )
-        .await
-        {
-            Ok(Ok(path)) => Some(path),
-            _ => None,
+    let mut subtitles_on_disk = preparation.cached_subtitles;
+    if subtitles_on_disk.is_empty() {
+        if let Some(result) = preparation.subtitle_results.first() {
+            if let Ok(Ok(path)) = tokio::time::timeout(
+                Duration::from_secs(25),
+                subtitles::download_english_subtitle(
+                    data_dir,
+                    &session.info_hash(id)?,
+                    video.index,
+                    result,
+                ),
+            )
+            .await
+            {
+                subtitles_on_disk.push(path);
+            }
         }
-    } else {
-        None
-    };
-    let subtitle_url = subtitle.map(|path| path.to_string_lossy().into_owned());
+    }
     Ok(PreparedPlayback {
         title: video.name.clone(),
         url: stream_server::stream_url(server, id, video.index),
-        subtitle_url,
+        subtitle_files: subtitles_on_disk
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
         file_length: video.length,
     })
 }
@@ -546,6 +540,11 @@ fn reconstruct_queue(
         .iter()
         .map(|ep| Episode {
             id: ep.id.clone(),
+            stream_id: if ep.stream_id.is_empty() {
+                ep.id.clone()
+            } else {
+                ep.stream_id.clone()
+            },
             title: ep.title.clone(),
             season: ep.season,
             episode: ep.episode,

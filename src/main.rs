@@ -50,7 +50,14 @@ async fn main() -> Result<()> {
     }
 
     if let Some(Commands::Play { torrent }) = cli.command.as_ref() {
-        return run_temporary_play(&config, torrent, None, None, Vec::new()).await;
+        return run_temporary_play(
+            &config,
+            torrent,
+            None,
+            None,
+            flix::cli_playback::SourceCatalog::default(),
+        )
+        .await;
     }
 
     if let Some(Commands::Search {
@@ -77,7 +84,7 @@ async fn main() -> Result<()> {
                     &selection.magnet,
                     selection.file_index,
                     selection.episode_queue,
-                    selection.alternatives,
+                    selection.catalog,
                 )
                 .await
             }
@@ -160,7 +167,7 @@ async fn run_temporary_play(
     torrent: &str,
     preferred_file_index: Option<usize>,
     episode_queue: Option<flix::episode_queue::EpisodeQueue>,
-    alternatives: Vec<flix::cli_playback::PlaybackSource>,
+    catalog: flix::cli_playback::SourceCatalog,
 ) -> Result<()> {
     let playback_cache = PlaybackCache::new()?;
     let session = Arc::new(TorrentSession::new(playback_cache.path()).await?);
@@ -170,7 +177,7 @@ async fn run_temporary_play(
         torrent,
         preferred_file_index,
         episode_queue,
-        alternatives,
+        catalog,
     )
     .await;
     drop(session);

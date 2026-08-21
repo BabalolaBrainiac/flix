@@ -102,12 +102,23 @@ impl TorrentSession {
         let session = Session::new_with_opts(
             download_dir.to_path_buf(),
             SessionOptions {
-                disable_dht_persistence: false,
+                // Persistent DHT pins a fixed UDP port. A second session, such
+                // as the web client while the CLI runs, or two plays in a row,
+                // then fails to bind that port with "address already in use".
+                // Each playback uses a fresh temporary session, so persistence
+                // adds no value. Disable it to get an ephemeral DHT port and
+                // let sessions coexist.
+                disable_dht_persistence: true,
                 ..Default::default()
             },
         )
         .await
-        .context("Failed to create librqbit session")?;
+        .with_context(|| {
+            format!(
+                "Failed to create librqbit session. Download directory: {}",
+                download_dir.display()
+            )
+        })?;
         Ok(Self { inner: session })
     }
 
@@ -126,7 +137,10 @@ impl TorrentSession {
             ..Default::default()
         };
 
-        let deadline = Instant::now() + Duration::from_secs(45);
+        // Each playback uses a fresh session, so the DHT starts cold and needs
+        // time to bootstrap and find peers for a low-seed torrent. 90 seconds
+        // gives a marginal source a fair chance before the app reports no peers.
+        let deadline = Instant::now() + Duration::from_secs(90);
         let response = timeout_at(deadline, self.inner.add_torrent(add_torrent, Some(options)))
             .await
             .context("Timed out adding torrent (no peers or metadata source reachable)")??;

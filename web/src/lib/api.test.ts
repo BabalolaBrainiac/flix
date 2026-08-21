@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { getHealth, search, play, getActivationStatus, redeemInvite, getDiagnostics } from './api';
+import { getHealth, search, play, getDiagnostics } from './api';
 
 describe('API Client', () => {
   beforeEach(() => {
@@ -69,45 +69,11 @@ describe('API Client', () => {
     expect(body.alternatives[0].quality).toBe('1080p');
   });
 
-  it('fetches activation status and sends invite redeem payload', async () => {
-    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
-      if (url === '/api/activation') {
-        return {
-          ok: true,
-          json: async () => ({ is_activated: false, vlc_installed: true }),
-        };
-      }
-      if (url === '/api/activation/redeem') {
-        return {
-          ok: true,
-          json: async () => ({ success: true, message: 'Activated' }),
-        };
-      }
-      return { ok: true, json: async () => ({}) };
-    });
-    globalThis.fetch = mockFetch;
-
-    const status = await getActivationStatus();
-    expect(status.is_activated).toBe(false);
-
-    const redeemRes = await redeemInvite('flix_invite_123', 'http://custom-gw');
-    expect(redeemRes.success).toBe(true);
-
-    const redeemCall = mockFetch.mock.calls[1];
-    expect(redeemCall[0]).toBe('/api/activation/redeem');
-    expect(JSON.parse(redeemCall[1].body)).toEqual({
-      invite_code: 'flix_invite_123',
-      gateway_url: 'http://custom-gw',
-    });
-  });
-
   it('fetches system diagnostics report', async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         app_version: '0.1.0',
-        is_activated: true,
-        gateway_reachable: false,
         vlc_status: 'Installed',
       }),
     });

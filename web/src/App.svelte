@@ -1,33 +1,21 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { getStatus, getActivationStatus } from './lib/api';
-  import type { PlaybackState, ActivationStatus } from './lib/types';
+  import { getActivationStatus, getStatus, subscribeEvents } from './lib/api';
+  import type { ActivationStatus, PlaybackSnapshot } from './lib/types';
+  import ActivationModal from './components/ActivationModal.svelte';
   import Navigation from './components/Navigation.svelte';
   import SearchView from './components/SearchView.svelte';
   import ContinueWatchingView from './components/ContinueWatchingView.svelte';
   import DownloadsView from './components/DownloadsView.svelte';
   import SettingsView from './components/SettingsView.svelte';
   import DiagnosticsView from './components/DiagnosticsView.svelte';
-  import ActivationModal from './components/ActivationModal.svelte';
-  import VlcGuidanceModal from './components/VlcGuidanceModal.svelte';
+  import NowPlayingBar from './components/NowPlayingBar.svelte';
 
   let activeTab: 'search' | 'continue' | 'downloads' | 'settings' | 'diagnostics' = 'search';
-  let playbackState: PlaybackState = { status: 'idle' };
+  let playbackState: PlaybackSnapshot = { state: 'idle' };
   let activationStatus: ActivationStatus | null = null;
-  let offlineMode = false;
-  let showVlcGuidance = false;
+  let unsubscribeEvents: (() => void) | null = null;
   let pollInterval: any = null;
-
-  async function checkActivation() {
-    try {
-      activationStatus = await getActivationStatus();
-      if (!activationStatus.vlc_installed && !activationStatus.is_activated) {
-        showVlcGuidance = true;
-      }
-    } catch {
-      // Ignore initial activation check failure
-    }
-  }
 
   async function refreshStatus() {
     try {
@@ -40,47 +28,42 @@
 
   function handlePlayStarted() {
     refreshStatus();
-    activeTab = 'continue';
   }
 
-  function handleActivationComplete() {
-    checkActivation();
-  }
-
-  function handleUseOfflineMode() {
-    offlineMode = true;
+  async function refreshActivation() {
+    try {
+      activationStatus = await getActivationStatus();
+    } catch {
+      activationStatus = null;
+    }
   }
 
   onMount(() => {
-    checkActivation();
+    refreshActivation();
     refreshStatus();
-    pollInterval = setInterval(refreshStatus, 2000);
+    unsubscribeEvents = subscribeEvents((snapshot) => {
+      playbackState = snapshot;
+    });
+    // Fallback poll every 5 seconds for status synchronization
+    pollInterval = setInterval(refreshStatus, 5000);
   });
 
   onDestroy(() => {
+    if (unsubscribeEvents) unsubscribeEvents();
     if (pollInterval) clearInterval(pollInterval);
   });
 </script>
 
 <div class="app-root">
+  {#if activationStatus && !activationStatus.is_activated}
+    <ActivationModal onActivated={refreshActivation} />
+  {/if}
+
   <Navigation
     {activeTab}
     {playbackState}
     onSelectTab={(tab) => (activeTab = tab)}
   />
-
-  <!-- First-Run Activation Gate (skipped if offline mode chosen) -->
-  {#if activationStatus && !activationStatus.is_activated && !offlineMode}
-    <ActivationModal
-      onActivated={handleActivationComplete}
-      onUseOfflineMode={handleUseOfflineMode}
-    />
-  {/if}
-
-  <!-- Missing VLC guidance modal if triggered -->
-  {#if showVlcGuidance}
-    <VlcGuidanceModal onClose={() => (showVlcGuidance = false)} />
-  {/if}
 
   <main class="main-content">
     {#if activeTab === 'search'}
@@ -96,9 +79,11 @@
     {:else if activeTab === 'settings'}
       <SettingsView />
     {:else if activeTab === 'diagnostics'}
-      <DiagnosticsView onTriggerActivation={() => { offlineMode = false; checkActivation(); }} />
+      <DiagnosticsView />
     {/if}
   </main>
+
+  <NowPlayingBar snapshot={playbackState} onStateChange={refreshStatus} />
 </div>
 
 <style>
@@ -106,6 +91,7 @@
     min-height: 100vh;
     display: flex;
     flex-direction: column;
+    padding-bottom: 80px;
   }
 
   .main-content {

@@ -1,3 +1,4 @@
+use crate::playback::{MediaRef, PlaybackSnapshot};
 use crate::stremio::{CatalogItem, CatalogKind, Episode};
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +15,7 @@ pub struct CatalogItemSummary {
     pub name: String,
     pub media_type: String,
     pub release_info: Option<String>,
+    pub poster: Option<String>,
     pub is_anime: bool,
 }
 
@@ -24,6 +26,7 @@ impl From<&CatalogItem> for CatalogItemSummary {
             name: item.name.clone(),
             media_type: item.media_type.clone(),
             release_info: item.release_info.clone(),
+            poster: item.poster.clone(),
             is_anime: item.kind == CatalogKind::AnimeKitsu,
         }
     }
@@ -46,9 +49,21 @@ pub struct EpisodeSummary {
     pub id: String,
     #[serde(default)]
     pub stream_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imdb_id: Option<String>,
     pub title: Option<String>,
     pub season: u32,
     pub episode: u32,
+}
+
+impl EpisodeSummary {
+    pub fn display_label(&self) -> String {
+        let ep = format!("S{:02}E{:02}", self.season, self.episode);
+        match &self.title {
+            Some(title) if !title.trim().is_empty() => format!("{} · {}", ep, title.trim()),
+            _ => format!("{} · Title unavailable", ep),
+        }
+    }
 }
 
 impl From<&Episode> for EpisodeSummary {
@@ -56,6 +71,7 @@ impl From<&Episode> for EpisodeSummary {
         Self {
             id: episode.id.clone(),
             stream_id: episode.stream_id.clone(),
+            imdb_id: episode.imdb_id.clone(),
             title: episode.title.clone(),
             season: episode.season,
             episode: episode.episode,
@@ -70,13 +86,14 @@ pub struct EpisodesResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StreamsCommand {
-    pub media_type: String,
+    #[serde(default)]
+    pub media_type: Option<String>,
     pub stream_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StreamSummary {
-    pub info_hash: String,
+    pub source_id: String,
     pub name: String,
     pub file_name: Option<String>,
     pub file_index: Option<usize>,
@@ -84,7 +101,6 @@ pub struct StreamSummary {
     pub is_recommended: bool,
     pub seeders: Option<u64>,
     pub size: Option<String>,
-    pub magnet: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,39 +124,23 @@ pub struct EpisodeQueueSeed {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlayCommand {
-    pub magnet: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub magnet: Option<String>,
     pub file_index: Option<usize>,
+    #[serde(default)]
+    pub media_ref: Option<MediaRef>,
     pub queue_seed: Option<EpisodeQueueSeed>,
     #[serde(default)]
     pub alternatives: Vec<PlaySource>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum PlaybackState {
-    Idle,
-    Preparing {
-        title: String,
-        quality: String,
-    },
-    Playing {
-        title: String,
-        quality: String,
-        url: String,
-        subtitle_url: Option<String>,
-        file_length: u64,
-        player_path: String,
-        has_next: bool,
-    },
-    Stopped,
-    Error {
-        message: String,
-    },
-}
+pub type PlaybackState = PlaybackSnapshot;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlaybackStatusResponse {
-    pub state: PlaybackState,
+    pub state: PlaybackSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -148,7 +148,7 @@ pub struct NextEpisodeCommand;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NextEpisodeResponse {
-    pub state: PlaybackState,
+    pub state: PlaybackSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,14 +217,13 @@ pub struct SettingsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActivationStatus {
     pub is_activated: bool,
-    pub vlc_installed: bool,
-    pub vlc_path: Option<String>,
     pub gateway_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RedeemInviteCommand {
     pub invite_code: String,
+    #[serde(default)]
     pub gateway_url: Option<String>,
 }
 
@@ -246,8 +245,6 @@ pub struct VlcGuidance {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiagnosticsReport {
     pub app_version: String,
-    pub is_activated: bool,
-    pub gateway_reachable: bool,
     pub vlc_status: String,
     pub player_path: Option<String>,
     pub download_dir: String,

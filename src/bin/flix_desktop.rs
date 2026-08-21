@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use anyhow::Result;
 use clap::Parser;
 use flix::config::Config;
@@ -12,10 +14,24 @@ struct Args {
 
     #[arg(long)]
     no_open: bool,
+
+    /// Bind the local web server to this port. Omit to use any free port.
+    #[arg(long)]
+    port: Option<u16>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize logging so pipeline errors are visible. RUST_LOG controls the
+    // level; the default keeps warnings and errors. Without a subscriber every
+    // tracing event is dropped silently.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("flix=info,warn")),
+        )
+        .init();
+
     let args = Args::parse();
     let config = Config::load()?;
     let service = DesktopService::new(config);
@@ -31,7 +47,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let server = DesktopServer::bind(service).await?;
+    let server = match args.port {
+        Some(port) => DesktopServer::bind_on(service, port).await?,
+        None => DesktopServer::bind(service).await?,
+    };
     let launch_url = server.url();
 
     println!("Flix Desktop server bound to: {}", server.local_url());

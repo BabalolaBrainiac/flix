@@ -57,18 +57,24 @@ fn players_receive_the_subtitle_file() {
 }
 
 #[test]
-fn players_prefer_english_audio_and_subtitles() {
-    let options = PlaybackOptions::new("Episode".to_string(), 1_000_000_000);
-    assert_eq!(options.languages, vec!["eng", "en", "english"]);
+fn players_use_original_audio_and_english_subtitles() {
+    // FLIX_AUDIO_LANGUAGE can leak in from the environment and force an audio
+    // language. Remove it so the test checks the real default.
+    std::env::remove_var("FLIX_AUDIO_LANGUAGE");
+
+    let options =
+        PlaybackOptions::new("Episode".to_string(), 1_000_000_000).with_standard_languages();
+    // No forced audio language: the player keeps the file's default track,
+    // which is the original language of the content.
+    assert!(options.audio_languages.is_empty());
+    assert_eq!(options.subtitle_languages, vec!["eng", "en", "english"]);
 
     let mpv = player_args(PlayerKind::Mpv, &options);
-    assert!(mpv.iter().any(|arg| arg == "--alang=eng,en,english"));
+    assert!(!mpv.iter().any(|arg| arg.starts_with("--alang=")));
     assert!(mpv.iter().any(|arg| arg == "--slang=eng,en,english"));
 
     let vlc = player_args(PlayerKind::Vlc, &options);
-    assert!(vlc
-        .iter()
-        .any(|arg| arg == "--audio-language=eng,en,english"));
+    assert!(!vlc.iter().any(|arg| arg.starts_with("--audio-language=")));
     assert!(vlc.iter().any(|arg| arg == "--sub-language=eng,en,english"));
 }
 

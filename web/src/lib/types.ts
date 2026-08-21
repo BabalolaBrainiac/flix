@@ -3,6 +3,7 @@ export interface CatalogItemSummary {
   name: string;
   media_type: string;
   release_info?: string;
+  poster?: string;
   is_anime: boolean;
 }
 
@@ -14,6 +15,7 @@ export interface SearchResponse {
 export interface EpisodeSummary {
   id: string;
   stream_id?: string;
+  imdb_id?: string;
   title?: string;
   season: number;
   episode: number;
@@ -24,7 +26,7 @@ export interface EpisodesResponse {
 }
 
 export interface StreamSummary {
-  info_hash: string;
+  source_id: string;
   name: string;
   file_name?: string;
   file_index?: number;
@@ -32,7 +34,6 @@ export interface StreamSummary {
   is_recommended: boolean;
   seeders?: number;
   size?: string;
-  magnet: string;
 }
 
 export interface StreamsResponse {
@@ -51,31 +52,69 @@ export interface EpisodeQueueSeed {
   current_episode_id: string;
 }
 
+export interface MediaRefMovie {
+  type: 'movie';
+  catalog_id: string;
+  title: string;
+}
+
+export interface MediaRefEpisode {
+  type: 'episode';
+  catalog_id: string;
+  stream_id: string;
+  imdb_id?: string;
+  season: number;
+  episode: number;
+  title?: string;
+}
+
+export type MediaRef = MediaRefMovie | MediaRefEpisode;
+
 export interface PlayCommand {
-  magnet: string;
+  source_id?: string;
+  magnet?: string;
   file_index?: number;
+  media_ref?: MediaRef;
   queue_seed?: EpisodeQueueSeed;
   alternatives?: PlaySource[];
 }
 
-export type PlaybackState =
-  | { status: 'idle' }
-  | { status: 'preparing'; title: string; quality: string }
+export interface SafeError {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export type PlaybackSnapshot =
+  | { state: 'idle' }
+  | { state: 'resolving_source'; media: MediaRef }
+  | { state: 'loading_torrent'; media: MediaRef; quality: string }
+  | { state: 'buffering'; media: MediaRef; quality: string; file_name: string }
+  | { state: 'finding_subtitle'; media: MediaRef; quality: string }
+  | { state: 'downloading_subtitle'; media: MediaRef; quality: string; subtitle_name: string }
+  | { state: 'launching_player'; media: MediaRef; quality: string; player_name: string }
   | {
-      status: 'playing';
+      state: 'playing';
+      media: MediaRef;
       title: string;
       quality: string;
-      url: string;
-      subtitle_url?: string;
       file_length: number;
-      player_path: string;
+      player_name: string;
+      subtitle_ready: boolean;
       has_next: boolean;
     }
-  | { status: 'stopped' }
-  | { status: 'error'; message: string };
+  | { state: 'stopping' }
+  | { state: 'failed'; error: SafeError };
+
+export type PlaybackState = PlaybackSnapshot;
 
 export interface PlaybackStatusResponse {
-  state: PlaybackState;
+  state: PlaybackSnapshot;
+}
+
+export interface OperationAccepted {
+  operation_id: string;
+  status: string;
 }
 
 export interface DownloadEntrySummary {
@@ -105,11 +144,8 @@ export interface SettingsResponse {
 
 export interface ActivationStatus {
   is_activated: boolean;
-  vlc_installed: boolean;
-  vlc_path?: string;
   gateway_url?: string;
 }
-
 
 export interface RedeemInviteResponse {
   success: boolean;
@@ -126,8 +162,6 @@ export interface VlcGuidance {
 
 export interface DiagnosticsReport {
   app_version: string;
-  is_activated: boolean;
-  gateway_reachable: boolean;
   vlc_status: string;
   player_path?: string;
   download_dir: string;

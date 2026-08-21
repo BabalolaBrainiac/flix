@@ -33,6 +33,7 @@ pub struct CatalogItem {
     pub media_type: String,
     pub name: String,
     pub release_info: Option<String>,
+    pub poster: Option<String>,
     pub kind: CatalogKind,
 }
 
@@ -40,6 +41,7 @@ pub struct CatalogItem {
 pub struct Episode {
     pub id: String,
     pub stream_id: String,
+    pub imdb_id: Option<String>,
     pub title: Option<String>,
     pub season: u32,
     pub episode: u32,
@@ -88,6 +90,7 @@ struct CatalogRecord {
     name: String,
     #[serde(rename = "releaseInfo")]
     release_info: Option<String>,
+    poster: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -168,6 +171,7 @@ pub fn parse_catalog_response(value: Value, kind: CatalogKind) -> Result<Vec<Cat
             media_type: record.media_type,
             name: sanitize_text(&record.name, 200),
             release_info: record.release_info.map(|value| sanitize_text(&value, 80)),
+            poster: record.poster.map(|value| sanitize_text(&value, 500)),
             kind,
         })
         .collect())
@@ -187,6 +191,11 @@ pub fn parse_meta_response(value: Value) -> Result<Vec<Episode>> {
             Some(Episode {
                 id,
                 stream_id,
+                imdb_id: record
+                    .imdb_id
+                    .as_deref()
+                    .filter(|value| valid_content_id(value))
+                    .map(|value| sanitize_text(value, 32)),
                 title: record.title.map(|value| sanitize_text(&value, 200)),
                 season: record.season?,
                 episode: record.episode?,
@@ -459,7 +468,7 @@ impl StremioClient {
     }
 
     pub async fn streams(&self, media_type: &str, id: &str) -> Result<Vec<TorrentStream>> {
-        let stream_type = if id.starts_with("kitsu:") {
+        let stream_type = if id.starts_with("kitsu:") || id.contains(':') {
             "series"
         } else {
             media_type

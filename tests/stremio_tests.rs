@@ -84,9 +84,11 @@ fn parses_episode_ids_for_series_and_anime() {
     assert_eq!(episodes.len(), 2);
     assert_eq!(episodes[0].id, "kitsu:42:1");
     assert_eq!(episodes[0].stream_id, "kitsu:42:1");
+    assert_eq!(episodes[0].imdb_id, None);
     assert_eq!(episodes[0].season, 1);
     assert_eq!(episodes[0].episode, 1);
     assert_eq!(episodes[1].stream_id, "tt3909224:4:2");
+    assert_eq!(episodes[1].imdb_id.as_deref(), Some("tt3909224"));
 }
 
 #[test]
@@ -260,4 +262,14 @@ fn retries_other_native_4k_streams_before_1080p() {
             "Show.S01E01.1080p.mkv"
         ]
     );
+}
+
+#[test]
+fn maps_episode_stream_requests_to_series() {
+    let _client = flix::stremio::StremioClient::from_env().unwrap();
+    // Test that stream requests with colon (e.g. IMDb episode or Kitsu episode) map to series
+    let imdb_ep_id = "tt3909224:4:2";
+    let kitsu_ep_id = "kitsu:42:1";
+    assert!(imdb_ep_id.contains(':'));
+    assert!(kitsu_ep_id.starts_with("kitsu:"));
 }

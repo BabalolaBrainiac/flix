@@ -2,7 +2,7 @@
 name = "flix"
 version = "0.1.0"
 edition = "2021"
-description = "Fast, lightweight terminal torrent streamer that plays media in mpv/VLC while downloading"
+description = "Torrent streamer with CLI, TUI, and desktop web UI. Searches Stremio catalogs, plays in mpv/VLC while downloading."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/BabalolaBrainiac/flix"
 readme = "README.md"
@@ -24,6 +24,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
 scraper = "0.20"
 uuid = { version = "1.24.0", features = ["v4"] }
@@ -33,9 +34,7 @@ tempfile = "3"
 percent-encoding = "2"
 rust-embed = { version = "8.5", features = ["mime-guess"] }
 mime_guess = "2.0"
-keyring = "3.6.3"
-
-
+keyring = { version = "3.6.1", features = ["apple-native", "windows-native"] }
 
 [features]
 default = []
@@ -55,3 +54,20 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 
+[package.metadata.packager]
+product-name = "Flix"
+identifier = "com.babalolabrainiac.flix"
+category = "Entertainment"
+authors = ["Flix Contributors"]
+about = "Private desktop torrent streaming client"
+before-packaging-command = "cd web && npm ci && npm run build"
+
+[[package.metadata.packager.binaries]]
+path = "flix-desktop"
+main = true
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+
+[package.metadata.packager.nsis]
+appdata-user = true

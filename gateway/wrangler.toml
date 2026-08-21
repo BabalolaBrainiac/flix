@@ -2,10 +2,29 @@ name = "flix-gateway"
 main = "src/index.ts"
 compatibility_date = "2026-08-15"
 
+# The gateway must answer on its Workers Custom Domain only. The workers.dev
+# hostname is a second public entry point that skips every control applied at
+# the zone, so it stays off.
+workers_dev = false
+
+# Keep queryable logs in the dashboard, not only in a live `wrangler tail`.
+# head_sampling_rate = 1 keeps every invocation, which suits a low-traffic
+# private gateway. Lower it if traffic grows.
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+
+# The database name and ID come from the Terraform root
+# terraform/cloudflare/projects/flix in the infra repository. They are the
+# d1_database_name and d1_database_id outputs. The ID is an identifier, not a
+# secret.
 [[d1_databases]]
 binding = "DB"
-database_name = "flix-gateway"
-database_id = "flix-gateway-d1"
+database_name = "flix-prod-d1-gateway"
+database_id = "46f2e6ae-f1e5-4705-b07b-a1ce784a63bf"
 migrations_dir = "migrations"
 
 [durable_objects]
@@ -15,4 +34,4 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["OpenSubtitlesCoordinator"]
+new_sqlite_classes = ["OpenSubtitlesCoordinator"]

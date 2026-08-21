@@ -1,3 +1,4 @@
+use crate::playback::MediaRef;
 use anyhow::{anyhow, Context, Result};
 use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
@@ -157,7 +158,108 @@ pub async fn find_english_subtitle(
 }
 
 pub fn is_configured() -> bool {
-    std::env::var("OPENSUBTITLES_API_KEY").is_ok_and(|value| !value.trim().is_empty())
+    gateway_is_configured()
+        || std::env::var("OPENSUBTITLES_API_KEY").is_ok_and(|value| !value.trim().is_empty())
+}
+
+pub fn gateway_is_configured() -> bool {
+    gateway_base_url().is_some()
+        && crate::desktop::credentials::get_device_token()
+            .ok()
+            .flatten()
+            .is_some()
+}
+
+pub async fn resolve_gateway_english_subtitle(
+    data_dir: &Path,
+    media: &MediaRef,
+    info_hash: &str,
+    file_index: usize,
+) -> Result<Option<PathBuf>> {
+    let Some(request) = GatewaySubtitleLookup::from_media(media) else {
+        return Ok(None);
+    };
+    let Some(device_token) = crate::desktop::credentials::get_device_token()? else {
+        return Ok(None);
+    };
+    let Some(base_url) = gateway_base_url() else {
+        return Ok(None);
+    };
+
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .min_tls_version(reqwest::tls::Version::TLS_1_2)
+        .timeout(Duration::from_secs(15))
+        .build()
+        .context("Failed to create the subtitle gateway client")?;
+    let response = client
+        .post(format!("{base_url}/v1/subtitles/resolve"))
+        .header("Authorization", format!("Bearer {device_token}"))
+        .header("X-Device-Token", &device_token)
+        .header("Content-Type", "application/json")
+        .json(&request)
+        .send()
+        .await
+        .context("Subtitle gateway request failed")?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "Subtitle gateway request failed with status {}",
+            response.status()
+        ));
+    }
+
+    let resolved: GatewayResolveResponse = response
+        .json()
+        .await
+        .context("Subtitle gateway returned an invalid response")?;
+
+    let GatewayResolveResponse::Matched {
+        file_name,
+        content,
+        format,
+        ..
+    } = resolved
+    else {
+        return Ok(None);
+    };
+
+    if format != "srt" {
+        return Err(anyhow!(
+            "Subtitle gateway returned an unsupported subtitle format"
+        ));
+    }
+
+    let subtitle_dir = data_dir.join("subtitles");
+    tokio::fs::create_dir_all(&subtitle_dir)
+        .await
+        .context("Failed to create the subtitle directory")?;
+    let destination = gateway_subtitle_destination_from_dir(&subtitle_dir, info_hash, file_index)?;
+    if existing_file(&destination).await? {
+        return Ok(Some(destination));
+    }
+
+    let partial = destination.with_extension("part");
+    let bytes = content.into_bytes();
+    if bytes.is_empty() || bytes.len() > SUBTITLE_LIMIT {
+        return Err(anyhow!(
+            "Subtitle gateway returned an invalid subtitle file"
+        ));
+    }
+    let result = write_subtitle(&partial, &destination, &bytes).await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&partial).await;
+    }
+    result?;
+
+    if let Some(name) = file_name {
+        tracing::debug!(
+            "Downloaded subtitle from gateway: {}",
+            sanitize_label(&name)
+        );
+    }
+
+    Ok(Some(destination))
 }
 
 struct OpenSubtitlesClient {
@@ -165,6 +267,54 @@ struct OpenSubtitlesClient {
     api_key: String,
     user_agent: String,
     subtitle_dir: PathBuf,
+}
+
+#[derive(Serialize)]
+struct GatewaySubtitleLookup {
+    imdb_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    season: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    episode: Option<u32>,
+}
+
+impl GatewaySubtitleLookup {
+    fn from_media(media: &MediaRef) -> Option<Self> {
+        match media {
+            MediaRef::Movie { catalog_id, .. } => Some(Self {
+                imdb_id: catalog_id.clone(),
+                season: None,
+                episode: None,
+            }),
+            MediaRef::Episode {
+                imdb_id,
+                stream_id,
+                season,
+                episode,
+                ..
+            } => Some(Self {
+                imdb_id: imdb_id.clone().unwrap_or_else(|| stream_id.clone()),
+                season: Some(*season),
+                episode: Some(*episode),
+            }),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum GatewayResolveResponse {
+    Matched {
+        #[serde(rename = "file_id")]
+        _file_id: u64,
+        file_name: Option<String>,
+        content: String,
+        format: String,
+    },
+    NoMatch {
+        #[serde(rename = "reason")]
+        _reason: String,
+    },
 }
 
 impl OpenSubtitlesClient {
@@ -350,6 +500,15 @@ fn subtitle_destination_from_dir(
     Ok(subtitle_dir.join(format!("{prefix}{file_id}.en.srt")))
 }
 
+fn gateway_subtitle_destination_from_dir(
+    subtitle_dir: &Path,
+    info_hash: &str,
+    file_index: usize,
+) -> Result<PathBuf> {
+    let prefix = subtitle_prefix(info_hash, file_index)?;
+    Ok(subtitle_dir.join(format!("{prefix}gateway.en.srt")))
+}
+
 /// Builds the shared name prefix of every subtitle file for one torrent video.
 fn subtitle_prefix(info_hash: &str, file_index: usize) -> Result<String> {
     if info_hash.len() != 40 || !info_hash.chars().all(|value| value.is_ascii_hexdigit()) {
@@ -503,4 +662,8 @@ fn sanitize_label(value: &str) -> String {
         })
         .take(300)
         .collect()
+}
+
+fn gateway_base_url() -> Option<String> {
+    Some(crate::desktop::gateway::resolve_base_url())
 }

@@ -1,7 +1,9 @@
 import type {
   DownloadsResponse,
   EpisodesResponse,
+  OperationAccepted,
   PlayCommand,
+  PlaybackSnapshot,
   PlaybackStatusResponse,
   SearchResponse,
   SettingsResponse,
@@ -58,7 +60,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   });
 
   if (!response.ok) {
-    const errorText = await response.text().catch(() => 'Unknown server error');
+    let errorText: string;
+    try {
+      const errorJson = await response.json();
+      errorText = errorJson.error?.message || errorJson.error || JSON.stringify(errorJson);
+    } catch {
+      errorText = await response.text().catch(() => 'Unknown server error');
+    }
     throw new Error(errorText || `Request failed with status ${response.status}`);
   }
 
@@ -71,6 +79,32 @@ export async function getHealth(): Promise<{ status: string; version: string }> 
 
 export async function getStatus(): Promise<PlaybackStatusResponse> {
   return request('/api/status');
+}
+
+export function subscribeEvents(
+  onEvent: (snapshot: PlaybackSnapshot) => void,
+  onError?: (err: Event) => void
+): () => void {
+  const token = getToken();
+  const url = token ? `/api/events?token=${encodeURIComponent(token)}` : '/api/events';
+  const eventSource = new EventSource(url);
+
+  eventSource.onmessage = (event) => {
+    try {
+      const parsed: PlaybackSnapshot = JSON.parse(event.data);
+      onEvent(parsed);
+    } catch {
+      // Ignore parse error on heartbeat
+    }
+  };
+
+  if (onError) {
+    eventSource.onerror = onError;
+  }
+
+  return () => {
+    eventSource.close();
+  };
 }
 
 export async function search(query: string, animeOnly = false): Promise<SearchResponse> {
@@ -94,7 +128,7 @@ export async function getStreams(mediaType: string, streamId: string): Promise<S
   });
 }
 
-export async function play(command: PlayCommand): Promise<PlaybackStatusResponse> {
+export async function play(command: PlayCommand): Promise<OperationAccepted> {
   return request('/api/play', {
     method: 'POST',
     body: JSON.stringify(command),
@@ -172,4 +206,3 @@ export async function quitApp(): Promise<{ success: boolean }> {
     body: JSON.stringify({}),
   });
 }
-

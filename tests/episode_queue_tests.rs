@@ -5,6 +5,7 @@ fn episode(id: &str, season: u32, number: u32) -> Episode {
     Episode {
         id: id.to_string(),
         stream_id: id.to_string(),
+        imdb_id: None,
         title: Some(format!("Episode {number}")),
         season,
         episode: number,
@@ -18,6 +19,7 @@ fn advances_across_a_season_boundary() {
         media_type: "series".to_string(),
         name: "Show".to_string(),
         release_info: Some("2026".to_string()),
+        poster: None,
         kind: CatalogKind::Cinemeta,
     };
     let episodes = vec![
@@ -45,6 +47,7 @@ fn builds_anime_subtitle_context_for_the_current_episode() {
         media_type: "series".to_string(),
         name: "Anime".to_string(),
         release_info: Some("2026".to_string()),
+        poster: None,
         kind: CatalogKind::AnimeKitsu,
     };
     let queue = EpisodeQueue::new(item, vec![episode("kitsu:42:10", 2, 10)], "kitsu:42:10")

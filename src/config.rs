@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone, Debug)]
 pub struct Config {
     pub data_dir: PathBuf,
     pub download_dir: PathBuf,
@@ -31,12 +32,16 @@ impl PlaybackCache {
     }
 }
 
+/// Returns the per-user data directory that Flix uses for state.
+pub fn data_dir() -> Result<PathBuf> {
+    let proj_dirs =
+        ProjectDirs::from("", "", "flix").context("Could not determine project directories")?;
+    Ok(proj_dirs.data_dir().to_path_buf())
+}
+
 impl Config {
     pub fn load() -> Result<Self> {
-        let proj_dirs =
-            ProjectDirs::from("", "", "flix").context("Could not determine project directories")?;
-
-        let data_dir = proj_dirs.data_dir().to_path_buf();
+        let data_dir = data_dir()?;
         let download_dir = data_dir.join("downloads");
 
         std::fs::create_dir_all(&download_dir).context("Failed to create download directory")?;

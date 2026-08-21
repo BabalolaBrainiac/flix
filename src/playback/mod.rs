@@ -1,3 +1,11 @@
+pub mod coordinator;
+pub mod language;
+pub mod types;
+
+pub use coordinator::*;
+pub use language::*;
+pub use types::*;
+
 use crate::session::{TorrentFile, TorrentId, TorrentSession};
 use crate::subtitles;
 use std::path::{Path, PathBuf};

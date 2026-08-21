@@ -79,11 +79,13 @@ fn desktop_episode_queue_seed_advances_across_season_boundaries() {
             media_type: "series".to_string(),
             release_info: Some("2021".to_string()),
             is_anime: false,
+            poster: None,
         },
         episodes: vec![
             EpisodeSummary {
                 id: "tt10161886:1:6".to_string(),
                 stream_id: "tt10161886:1:6".to_string(),
+                imdb_id: Some("tt10161886".to_string()),
                 title: Some("For All Time. Always.".to_string()),
                 season: 1,
                 episode: 6,
@@ -91,6 +93,7 @@ fn desktop_episode_queue_seed_advances_across_season_boundaries() {
             EpisodeSummary {
                 id: "tt10161886:2:1".to_string(),
                 stream_id: "tt10161886:2:1".to_string(),
+                imdb_id: Some("tt10161886".to_string()),
                 title: Some("Ouroboros".to_string()),
                 season: 2,
                 episode: 1,
@@ -104,6 +107,7 @@ fn desktop_episode_queue_seed_advances_across_season_boundaries() {
         media_type: seed.catalog_item.media_type.clone(),
         name: seed.catalog_item.name.clone(),
         release_info: seed.catalog_item.release_info.clone(),
+        poster: seed.catalog_item.poster.clone(),
         kind: CatalogKind::Cinemeta,
     };
     let episodes: Vec<Episode> = seed
@@ -112,6 +116,7 @@ fn desktop_episode_queue_seed_advances_across_season_boundaries() {
         .map(|ep| Episode {
             id: ep.id.clone(),
             stream_id: ep.stream_id.clone(),
+            imdb_id: ep.imdb_id.clone(),
             title: ep.title.clone(),
             season: ep.season,
             episode: ep.episode,
@@ -134,8 +139,10 @@ fn desktop_episode_queue_seed_advances_across_season_boundaries() {
 #[test]
 fn serializes_play_command_with_queue_and_alternatives() {
     let command = flix::desktop::PlayCommand {
-        magnet: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_string(),
+        source_id: Some("src-123".to_string()),
+        magnet: Some("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_string()),
         file_index: Some(0),
+        media_ref: None,
         queue_seed: Some(EpisodeQueueSeed {
             catalog_item: CatalogItemSummary {
                 id: "tt10161886".to_string(),
@@ -143,10 +150,12 @@ fn serializes_play_command_with_queue_and_alternatives() {
                 media_type: "series".to_string(),
                 release_info: Some("2021".to_string()),
                 is_anime: false,
+                poster: None,
             },
             episodes: vec![EpisodeSummary {
                 id: "tt10161886:1:1".to_string(),
                 stream_id: "tt10161886:1:1".to_string(),
+                imdb_id: Some("tt10161886".to_string()),
                 title: Some("Glorious Purpose".to_string()),
                 season: 1,
                 episode: 1,

@@ -1,7 +1,6 @@
 export interface Env {
   DB: D1Database;
   OPENSUBTITLES_COORDINATOR: DurableObjectNamespace;
-  ADMIN_SECRET?: string;
   OPENSUBTITLES_API_KEY?: string;
   OPENSUBTITLES_USER_AGENT?: string;
   OPENSUBTITLES_USERNAME?: string;
@@ -25,18 +24,21 @@ export interface DeviceRecord {
   request_count: number;
 }
 
-export interface CatalogSearchItem {
-  id: string;
-  name: string;
-  media_type: string;
-  release_info?: string;
-  is_anime: boolean;
+export interface SubtitleResolveRequest {
+  imdb_id: string;
+  season?: number;
+  episode?: number;
 }
 
-export interface SubtitleSearchResult {
-  id: string;
-  file_id: number;
-  file_name?: string;
-  release?: string;
-  download_count: number;
-}
+export type SubtitleResolveResponse =
+  | {
+      status: 'matched';
+      file_id: number;
+      file_name?: string;
+      content: string;
+      format: 'srt';
+    }
+  | {
+      status: 'no_match';
+      reason: string;
+    };

@@ -8,8 +8,8 @@ Flix can search Stremio-compatible catalogs and torrent stream add-ons. You can 
 
 Flix has three parts:
 
-- The Rust CLI and TUI in `src/`. This part is complete and works alone.
-- The desktop web application in `web/`. Svelte and TypeScript supply the interface. The `flix-desktop` binary serves it on `127.0.0.1`.
+- The Rust CLI and TUI in `src/`.
+- The desktop web application in `web/`. Svelte and TypeScript supply the interface. The `flix-desktop` binary serves it on `127.0.0.1`. Search, episode selection, stream picking, and playback all work through the browser.
 - The optional Cloudflare Workers gateway in `gateway/`. It supplies shared invite, device, and subtitle services. The gateway is not deployed.
 
 ## Requirements
@@ -52,6 +52,8 @@ cargo build --release --features web-ui --bin flix-desktop
 ```
 
 The `web/dist` directory holds build output, so Git ignores its contents. A new clone has an empty `web/dist` directory. The Rust build succeeds with the empty directory, but the desktop application serves no page until you run the web build.
+
+The web app opens automatically in your default browser. It can search Stremio catalogs, browse episodes, pick torrent streams, and launch your local media player. Poster images, quality badges, and seed counts help you choose a stream.
 
 Use these options:
 

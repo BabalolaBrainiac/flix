@@ -1,15 +1,14 @@
 use crate::config::Config;
 use crate::desktop::types::{
-    CatalogItemSummary, DownloadEntrySummary, DownloadsAction, DownloadsCommand, DownloadsResponse,
-    EpisodeSummary, EpisodesCommand, EpisodesResponse, PlayerSummary, SearchCommand,
-    SearchResponse, SettingsAction, SettingsCommand, SettingsResponse, StreamSummary,
-    StreamsCommand, StreamsResponse,
+    ActivationStatus, CatalogItemSummary, DownloadEntrySummary, DownloadsAction, DownloadsCommand,
+    DownloadsResponse, EpisodeSummary, EpisodesCommand, EpisodesResponse, PlayerSummary,
+    RedeemInviteCommand, RedeemInviteResponse, SearchCommand, SearchResponse, SettingsAction,
+    SettingsCommand, SettingsResponse, StreamSummary, StreamsCommand, StreamsResponse,
 };
 use crate::library::Library;
 use crate::player;
 use crate::stremio::{
-    self, automatic_playback_candidates, stream_quality_label, CatalogItem, CatalogKind,
-    StremioClient,
+    automatic_playback_candidates, stream_quality_label, CatalogItem, CatalogKind, StremioClient,
 };
 use crate::subtitles;
 use anyhow::{anyhow, Result};
@@ -47,6 +46,7 @@ pub async fn handle_episodes(
         },
         name: String::new(),
         release_info: None,
+        poster: None,
         kind,
     };
     let episodes = client.episodes(&item).await?;
@@ -58,21 +58,23 @@ pub async fn handle_episodes(
 
 pub async fn handle_streams(
     client: &StremioClient,
+    coordinator: &crate::playback::PlaybackCoordinator,
     command: &StreamsCommand,
 ) -> Result<StreamsResponse> {
-    let streams = client
-        .streams(&command.media_type, &command.stream_id)
-        .await?;
+    let media_type = command.media_type.as_deref().unwrap_or("series");
+    let streams = client.streams(media_type, &command.stream_id).await?;
+    let registered = coordinator.register_stream_candidates(&streams).await?;
     let recommended_candidates = automatic_playback_candidates(&streams);
     let recommended_first = recommended_candidates.first().copied();
 
     let mut summaries = Vec::new();
-    for stream in &streams {
-        let is_recommended = recommended_first.is_some_and(|first| std::ptr::eq(first, stream));
-        let quality = stream_quality_label(stream).to_string();
-        let magnet = stremio::build_magnet(&stream.info_hash, stream.file_name.as_deref())?;
+    for (source_id, stream) in registered {
+        let is_recommended = recommended_first
+            .as_ref()
+            .is_some_and(|first| first.info_hash == stream.info_hash);
+        let quality = stream_quality_label(&stream).to_string();
         summaries.push(StreamSummary {
-            info_hash: stream.info_hash.clone(),
+            source_id,
             name: stream.name.clone(),
             file_name: stream.file_name.clone(),
             file_index: stream.file_index,
@@ -80,7 +82,6 @@ pub async fn handle_streams(
             is_recommended,
             seeders: stream.seeders,
             size: stream.size.clone(),
-            magnet,
         });
     }
     Ok(StreamsResponse { streams: summaries })
@@ -167,75 +168,67 @@ pub fn handle_settings(config: &Config, command: &SettingsCommand) -> Result<Set
     }
 }
 
-pub fn handle_activation_status() -> crate::desktop::types::ActivationStatus {
-    let token = crate::desktop::credentials::get_device_token().unwrap_or(None);
-    let is_activated = token.is_some();
-    let detected = player::detect();
-    let vlc = detected
-        .into_iter()
-        .find(|p| p.kind == player::PlayerKind::Vlc);
-    let vlc_installed = vlc.is_some();
-    let vlc_path = vlc.map(|p| p.path.display().to_string());
+pub fn handle_activation_status() -> ActivationStatus {
+    let is_activated = crate::desktop::credentials::get_device_token()
+        .ok()
+        .flatten()
+        .is_some();
 
-    crate::desktop::types::ActivationStatus {
+    ActivationStatus {
         is_activated,
-        vlc_installed,
-        vlc_path,
-        gateway_url: std::env::var("FLIX_GATEWAY_URL").ok(),
+        gateway_url: Some(crate::desktop::gateway::resolve_base_url()),
     }
 }
 
-pub async fn handle_redeem_invite(
-    cmd: &crate::desktop::types::RedeemInviteCommand,
-) -> Result<crate::desktop::types::RedeemInviteResponse> {
-    let raw_code = cmd.invite_code.trim();
-    if raw_code.is_empty() {
+pub async fn handle_redeem_invite(command: &RedeemInviteCommand) -> Result<RedeemInviteResponse> {
+    let invite_code = command.invite_code.trim();
+    if invite_code.is_empty() {
         return Err(anyhow!("Invite code cannot be empty"));
     }
 
-    let base_url = cmd
+    let gateway_url = match command
         .gateway_url
-        .clone()
-        .or_else(|| std::env::var("FLIX_GATEWAY_URL").ok())
-        .unwrap_or_else(|| "http://127.0.0.1:8787".to_string());
-    let base_url = base_url.trim_end_matches('/').to_string();
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => crate::desktop::gateway::normalize_gateway_url(value)?,
+        None => crate::desktop::gateway::resolve_base_url(),
+    };
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
-
-    let redeem_url = format!("{}/v1/invites/redeem", base_url);
-    let res = client
-        .post(&redeem_url)
-        .json(&serde_json::json!({ "invite_code": raw_code }))
+    let response = client
+        .post(format!("{gateway_url}/v1/invites/redeem"))
+        .json(&serde_json::json!({ "invite_code": invite_code }))
         .send()
         .await
-        .map_err(|e| anyhow!("Failed to connect to gateway: {}", e))?;
+        .map_err(|_| anyhow!("Failed to connect to the subtitle gateway"))?;
 
-    if !res.status().is_success() {
-        let status = res.status();
-        let body_text = res.text().await.unwrap_or_default();
+    if !response.status().is_success() {
         return Err(anyhow!(
-            "Gateway rejected invite (HTTP {}): {}",
-            status,
-            body_text
+            "The invite code was rejected by the subtitle gateway"
         ));
     }
 
-    let payload: serde_json::Value = res
+    let payload: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| anyhow!("Invalid response from gateway: {}", e))?;
-
-    let device_token = payload["device_token"]
-        .as_str()
-        .ok_or_else(|| anyhow!("Gateway response missing device_token"))?;
+        .map_err(|_| anyhow!("The subtitle gateway returned an invalid activation response"))?;
+    let device_token = payload
+        .get("device_token")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow!("The subtitle gateway did not return a device token"))?;
 
     crate::desktop::credentials::save_device_token(device_token)?;
+    // The gateway URL must survive a restart, or later subtitle requests go to
+    // the packaged default instead of the gateway that granted the token.
+    crate::desktop::gateway::save_base_url(&gateway_url)?;
 
-    Ok(crate::desktop::types::RedeemInviteResponse {
+    Ok(RedeemInviteResponse {
         success: true,
-        message: "Device activated and token securely stored in OS credential store.".to_string(),
+        message: "Device activation is complete.".to_string(),
     })
 }
 
@@ -297,10 +290,12 @@ pub fn handle_diagnostics(
     config: &Config,
     active_playback: bool,
 ) -> Result<crate::desktop::types::DiagnosticsReport> {
-    let activation = handle_activation_status();
     let detected_player = player::detect().into_iter().next();
 
-    let vlc_status = if activation.vlc_installed {
+    let vlc_status = if detected_player
+        .as_ref()
+        .is_some_and(|p| p.kind == player::PlayerKind::Vlc)
+    {
         "Installed".to_string()
     } else {
         "Not detected".to_string()
@@ -308,8 +303,6 @@ pub fn handle_diagnostics(
 
     Ok(crate::desktop::types::DiagnosticsReport {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        is_activated: activation.is_activated,
-        gateway_reachable: activation.gateway_url.is_some(),
         vlc_status,
         player_path: detected_player.map(|p| p.path.display().to_string()),
         download_dir: config.download_dir.display().to_string(),

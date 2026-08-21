@@ -1,3 +1,4 @@
+use crate::playback::LanguagePolicy;
 use anyhow::{anyhow, Result};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::path::{Path, PathBuf};
@@ -50,8 +51,10 @@ pub struct PlaybackOptions {
     /// Subtitle files to attach, most preferred first. Every file becomes a
     /// selectable subtitle track in the player.
     pub subtitle_files: Vec<String>,
-    /// Audio and subtitle language preference, most preferred first.
-    pub languages: Vec<String>,
+    /// Audio language preference, most preferred first.
+    pub audio_languages: Vec<String>,
+    /// Subtitle language preference, most preferred first.
+    pub subtitle_languages: Vec<String>,
     pub start_at: Option<f64>,
     pub ipc_socket: Option<PathBuf>,
     pub show_output: bool,
@@ -59,17 +62,32 @@ pub struct PlaybackOptions {
 }
 
 impl PlaybackOptions {
-    /// Builds options with the default English language preference.
     pub fn new(title: String, file_length: u64) -> Self {
+        let language_policy = LanguagePolicy::standard();
         Self {
             title,
             subtitle_files: Vec::new(),
-            languages: preferred_languages(),
+            audio_languages: language_policy.audio_languages,
+            subtitle_languages: language_policy.subtitle_languages,
             start_at: None,
             ipc_socket: None,
             show_output: false,
             file_length,
         }
+    }
+
+    /// Applies the standard policy: original audio track, English subtitles.
+    pub fn with_standard_languages(mut self) -> Self {
+        let language_policy = LanguagePolicy::standard();
+        self.audio_languages = language_policy.audio_languages;
+        self.subtitle_languages = language_policy.subtitle_languages;
+        self
+    }
+
+    pub fn with_language_policy(mut self, policy: LanguagePolicy) -> Self {
+        self.audio_languages = policy.audio_languages;
+        self.subtitle_languages = policy.subtitle_languages;
+        self
     }
 
     pub fn with_subtitles(mut self, subtitle_files: Vec<String>) -> Self {
@@ -160,7 +178,8 @@ pub fn detect() -> Vec<Player> {
 
 pub fn command(p: &Player, url: &str, opts: &PlaybackOptions) -> Command {
     let mut cmd = Command::new(&p.path);
-    let languages = opts.languages.join(",");
+    let audio_languages = opts.audio_languages.join(",");
+    let subtitle_languages = opts.subtitle_languages.join(",");
 
     match p.kind {
         PlayerKind::Mpv => {
@@ -179,10 +198,13 @@ pub fn command(p: &Player, url: &str, opts: &PlaybackOptions) -> Command {
                 cmd.arg("--demuxer-max-bytes=256MiB");
             }
 
-            if !languages.is_empty() {
-                cmd.arg(format!("--alang={languages}"));
-                cmd.arg(format!("--slang={languages}"));
+            if !audio_languages.is_empty() {
+                cmd.arg(format!("--alang={audio_languages}"));
             }
+            if !subtitle_languages.is_empty() {
+                cmd.arg(format!("--slang={subtitle_languages}"));
+            }
+            cmd.arg("--subs-fallback=no");
 
             // mpv accepts one `--sub-file` for each extra subtitle track.
             for subtitle in &opts.subtitle_files {
@@ -201,9 +223,11 @@ pub fn command(p: &Player, url: &str, opts: &PlaybackOptions) -> Command {
                 cmd.arg("--network-caching=5000");
             }
 
-            if !languages.is_empty() {
-                cmd.arg(format!("--audio-language={languages}"));
-                cmd.arg(format!("--sub-language={languages}"));
+            if !audio_languages.is_empty() {
+                cmd.arg(format!("--audio-language={audio_languages}"));
+            }
+            if !subtitle_languages.is_empty() {
+                cmd.arg(format!("--sub-language={subtitle_languages}"));
             }
 
             // VLC reads one `--sub-file`. Flix attaches every other subtitle as

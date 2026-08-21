@@ -27,7 +27,7 @@ fn serializes_and_deserializes_desktop_commands() {
     assert_eq!(episodes, parsed);
 
     let streams = StreamsCommand {
-        media_type: "series".to_string(),
+        media_type: Some("series".to_string()),
         stream_id: "tt10161886:1:1".to_string(),
     };
     let json = serde_json::to_string(&streams).unwrap();
@@ -89,7 +89,7 @@ async fn desktop_service_initializes_with_idle_state_and_cleans_up() {
         download_dir: temp.path().join("downloads"),
         data_dir: temp.path().join("data"),
     };
-    let mut service = DesktopService::new(config);
+    let service = DesktopService::new(config);
     let status = service.status().await.unwrap();
     assert_eq!(status.state, PlaybackState::Idle);
 
@@ -104,6 +104,7 @@ fn converts_catalog_items_and_episodes_to_desktop_summaries() {
         media_type: "series".to_string(),
         name: "Test Title".to_string(),
         release_info: Some("2024".to_string()),
+        poster: None,
         kind: CatalogKind::Cinemeta,
     };
     let summary = CatalogItemSummary::from(&item);
@@ -114,6 +115,7 @@ fn converts_catalog_items_and_episodes_to_desktop_summaries() {
     let ep = Episode {
         id: "tt12345:1:1".to_string(),
         stream_id: "tt12345:1:1".to_string(),
+        imdb_id: Some("tt12345".to_string()),
         title: Some("Pilot".to_string()),
         season: 1,
         episode: 1,
@@ -134,11 +136,13 @@ fn reconstructs_episode_queue_seed() {
             media_type: "series".to_string(),
             release_info: Some("2024".to_string()),
             is_anime: false,
+            poster: None,
         },
         episodes: vec![
             EpisodeSummary {
                 id: "tt12345:1:1".to_string(),
                 stream_id: "tt12345:1:1".to_string(),
+                imdb_id: Some("tt12345".to_string()),
                 title: Some("Pilot".to_string()),
                 season: 1,
                 episode: 1,
@@ -146,6 +150,7 @@ fn reconstructs_episode_queue_seed() {
             EpisodeSummary {
                 id: "tt12345:1:2".to_string(),
                 stream_id: "tt12345:1:2".to_string(),
+                imdb_id: Some("tt12345".to_string()),
                 title: Some("Episode 2".to_string()),
                 season: 1,
                 episode: 2,

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { getVlcGuidance } from '../lib/api';
   import type { VlcGuidance } from '../lib/types';
+  import { Tv, Copy, Check, ExternalLink, X } from 'lucide-svelte';
 
   export let onClose: () => void;
 
@@ -31,7 +32,6 @@
 </script>
 
 <div
-
   class="modal-backdrop"
   role="dialog"
   aria-modal="true"
@@ -39,35 +39,38 @@
   on:click={(e) => e.target === e.currentTarget && onClose()}
   on:keydown={(e) => e.key === 'Escape' && onClose()}
 >
-  <div class="guidance-card glass-panel" role="document">
-
+  <div class="guidance-card panel" role="document">
     <div class="card-header">
       <div>
-        <span class="badge badge-accent">PLAYER SETUP</span>
-        <h2 class="card-title">VLC Media Player Required</h2>
+        <span class="badge badge-recommended">Media Player</span>
+        <h2 class="card-title">Media Player Setup</h2>
       </div>
-      <button class="close-btn" on:click={onClose}>✕</button>
+      <button class="close-btn" on:click={onClose}><X size={18} /></button>
     </div>
 
     <p class="card-desc">
-      Flix streams original quality video directly to VLC on your computer without transcoding or browser lag.
+      Flix streams native video directly to mpv or VLC on your computer without transcoding.
     </p>
 
     {#if guidance}
       {#if guidance.command}
         <div class="command-box">
-          <div class="command-header">One-Click Install Command ({guidance.platform.toUpperCase()}):</div>
+          <div class="command-header">Install Command ({guidance.platform.toUpperCase()}):</div>
           <div class="command-row">
             <code class="command-text">{guidance.command}</code>
             <button class="copy-cmd-btn" on:click={() => copyCommand(guidance?.command || '')}>
-              {copiedCommand ? '✓ Copied' : '📋 Copy'}
+              {#if copiedCommand}
+                <Check size={13} /> Copied
+              {:else}
+                <Copy size={13} /> Copy
+              {/if}
             </button>
           </div>
         </div>
       {/if}
 
       <div class="steps-section">
-        <h4 class="steps-title">Installation Steps:</h4>
+        <h4 class="steps-title">Installation Instructions:</h4>
         <ol class="steps-list">
           {#each guidance.instructions as step}
             <li class="step-item">{step}</li>
@@ -82,15 +85,14 @@
           rel="noopener noreferrer"
           class="download-link-btn primary"
         >
-          🌐 Open Official VLC Download Page
+          <ExternalLink size={15} /> Open Official VLC Download Page
         </a>
         <button class="done-btn" on:click={onClose}>
-          I've Installed VLC
+          Dismiss
         </button>
       </div>
     {:else}
       <div class="loading-box">
-        <span class="spinner"></span>
         <span>Loading installation steps...</span>
       </div>
     {/if}
@@ -101,8 +103,7 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.8);
-    backdrop-filter: blur(10px);
+    background: rgba(0, 0, 0, 0.75);
     z-index: 200;
     display: flex;
     align-items: center;
@@ -111,13 +112,13 @@
   }
 
   .guidance-card {
-    max-width: 540px;
+    max-width: 520px;
     width: 100%;
-    padding: 32px;
+    padding: 28px;
     border-radius: var(--radius-lg);
-    background: linear-gradient(135deg, rgba(23, 31, 48, 0.95), rgba(15, 20, 34, 0.98));
-    border: 1px solid rgba(99, 102, 241, 0.4);
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
   }
 
   .card-header {
@@ -128,8 +129,8 @@
   }
 
   .card-title {
-    font-size: 1.5rem;
-    font-weight: 800;
+    font-size: 1.3rem;
+    font-weight: 700;
     margin-top: 6px;
     color: var(--text-primary);
   }
@@ -137,7 +138,6 @@
   .close-btn {
     background: transparent;
     color: var(--text-muted);
-    font-size: 1.25rem;
     padding: 4px;
   }
 
@@ -147,63 +147,61 @@
 
   .card-desc {
     color: var(--text-secondary);
-    font-size: 0.95rem;
-    margin-bottom: 24px;
-    line-height: 1.5;
+    font-size: 0.85rem;
+    margin-bottom: 20px;
+    line-height: 1.4;
   }
 
   .command-box {
-    background: rgba(8, 11, 17, 0.8);
+    background: var(--bg-secondary);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
-    padding: 14px 18px;
-    margin-bottom: 24px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
   }
 
   .command-header {
     font-size: 0.75rem;
-    font-weight: 700;
+    font-weight: 600;
     color: var(--text-muted);
     text-transform: uppercase;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
   }
 
   .command-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
   }
 
   .command-text {
     font-family: monospace;
-    font-size: 0.9rem;
-    color: #a5b4fc;
+    font-size: 0.85rem;
+    color: #93c5fd;
   }
 
   .copy-cmd-btn {
-    padding: 6px 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
     border-radius: var(--radius-sm);
-    background: rgba(99, 102, 241, 0.2);
-    color: #fff;
+    background: var(--bg-surface-active);
+    color: var(--text-primary);
     font-size: 0.8rem;
     font-weight: 600;
-    border: 1px solid rgba(99, 102, 241, 0.4);
-  }
-
-  .copy-cmd-btn:hover {
-    background: rgba(99, 102, 241, 0.35);
   }
 
   .steps-section {
-    margin-bottom: 28px;
+    margin-bottom: 24px;
   }
 
   .steps-title {
-    font-size: 0.9rem;
-    font-weight: 700;
+    font-size: 0.85rem;
+    font-weight: 600;
     color: var(--text-secondary);
-    margin-bottom: 10px;
+    margin-bottom: 8px;
   }
 
   .steps-list {
@@ -211,11 +209,11 @@
     padding-left: 20px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
   }
 
   .step-item {
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     color: var(--text-secondary);
     line-height: 1.4;
   }
@@ -223,21 +221,21 @@
   .modal-actions {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
 
   .download-link-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 12px 24px;
-    border-radius: var(--radius-md);
-    font-size: 0.95rem;
+    gap: 8px;
+    padding: 10px 20px;
+    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
     font-weight: 600;
     text-decoration: none;
     background: var(--accent-primary);
     color: #fff;
-    box-shadow: var(--accent-glow);
   }
 
   .download-link-btn:hover {
@@ -245,38 +243,21 @@
   }
 
   .done-btn {
-    padding: 10px 20px;
-    border-radius: var(--radius-md);
-    background: rgba(255, 255, 255, 0.05);
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
     border: 1px solid var(--border-subtle);
     color: var(--text-secondary);
-    font-size: 0.9rem;
+    font-size: 0.85rem;
   }
 
   .done-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
     color: var(--text-primary);
   }
 
   .loading-box {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 24px 0;
+    padding: 20px 0;
+    text-align: center;
     color: var(--text-muted);
-  }
-
-  .spinner {
-    display: inline-block;
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
   }
 </style>

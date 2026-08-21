@@ -1,0 +1,193 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v0.1.0)'
+        required: true
+        type: string
+      commit:
+        description: 'Commit SHA on main to publish'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate-commit:
+    name: Validate Main Commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Verify commit belongs to main branch
+        run: |
+          git merge-base --is-ancestor "${{ github.event.inputs.commit }}" origin/main
+          echo "Commit ${{ github.event.inputs.commit }} is verified on main branch."
+
+  rerun-gates:
+    name: Rerun Release Gates
+    needs: [validate-commit]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.commit }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            gateway/package-lock.json
+
+      - name: Build web bundle for desktop compile
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Run Rust gates
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-features
+
+      - name: Run web gates
+        working-directory: web
+        run: |
+          npm run check
+          npm test
+
+      - name: Install gateway dependencies
+        working-directory: gateway
+        run: npm ci
+
+      - name: Run gateway gates
+        working-directory: gateway
+        run: |
+          npx tsc --noEmit
+          npm test
+
+  build-release-packages:
+    name: Build Native Release Packages
+    needs: [validate-commit, rerun-gates]
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: universal-apple-darwin
+            artifact_name: Flix-macOS-universal.dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: Flix-Windows-x64-Setup.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.commit }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Build web bundle
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      - name: Build macOS Universal DMG
+        if: matrix.os == 'macos-latest'
+        run: |
+          cargo build --release --features web-ui --target aarch64-apple-darwin --bin flix-desktop
+          cargo build --release --features web-ui --target x86_64-apple-darwin --bin flix-desktop
+          mkdir -p target/universal/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/flix-desktop \
+            target/x86_64-apple-darwin/release/flix-desktop \
+            -output target/universal/release/flix-desktop
+          cargo packager --release --formats dmg --target universal-apple-darwin --binaries-dir target/universal/release
+
+      - name: Build Windows NSIS Installer
+        if: matrix.os == 'windows-latest'
+        run: |
+          cargo build --release --features web-ui --target x86_64-pc-windows-msvc --bin flix-desktop
+          cargo packager --release --formats nsis --target x86_64-pc-windows-msvc --binaries-dir target/x86_64-pc-windows-msvc/release
+
+      # Publish a fixed file name so a release download URL is predictable from
+      # the version tag alone.
+      - name: Stage the package under a stable name
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          built="$(find target/packager -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.exe' \) | head -n 1)"
+          if [ -z "$built" ]; then
+            echo "No package file was produced under target/packager."
+            exit 1
+          fi
+          cp "$built" "dist/${{ matrix.artifact_name }}"
+          ls -l dist
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-release-packages]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Generate SHA256 Checksums
+        run: |
+          cd release-artifacts
+          find . -type f -not -name "SHA256SUMS.txt" -exec sha256sum {} + > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: Release ${{ github.event.inputs.version }}
+          target_commitish: ${{ github.event.inputs.commit }}
+          draft: false
+          prerelease: false
+          files: |
+            release-artifacts/**

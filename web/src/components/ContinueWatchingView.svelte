@@ -1,8 +1,9 @@
 <script lang="ts">
   import { nextEpisode, stopPlayback } from '../lib/api';
-  import type { PlaybackState } from '../lib/types';
+  import type { PlaybackSnapshot } from '../lib/types';
+  import { Square, SkipForward, HardDrive, Tv, Film } from 'lucide-svelte';
 
-  export let playbackState: PlaybackState;
+  export let playbackState: PlaybackSnapshot;
   export let onNavigateToSearch: () => void;
   export let onStateChanged: () => void;
 
@@ -12,13 +13,11 @@
 
   async function handleNext() {
     isAdvancing = true;
-    actionMessage = 'Preparing next episode in background while current stream continues...';
     try {
       await nextEpisode();
-      actionMessage = 'Advanced to next episode!';
       onStateChanged();
     } catch (e: any) {
-      actionMessage = `Next episode preparation failed: ${e.message}`;
+      actionMessage = `Next episode failed: ${e.message}`;
     } finally {
       isAdvancing = false;
     }
@@ -26,10 +25,8 @@
 
   async function handleStop() {
     isStopping = true;
-    actionMessage = 'Stopping player and cleaning up session...';
     try {
       await stopPlayback();
-      actionMessage = 'Playback stopped and session cleaned.';
       onStateChanged();
     } catch (e: any) {
       actionMessage = `Stop failed: ${e.message}`;
@@ -48,19 +45,19 @@
 </script>
 
 <div class="continue-view">
-  {#if playbackState.status === 'playing'}
-    <div class="hero-player-card glass-panel">
+  {#if playbackState.state === 'playing'}
+    <div class="hero-player-card panel">
       <div class="card-status-bar">
         <div class="status-indicator">
-          <span class="live-pulse pulsing-indicator"></span>
-          <span class="status-label">STREAMING TO LOCAL PLAYER</span>
+          <span class="live-dot"></span>
+          <span class="status-label">ACTIVE PLAYBACK SESSION</span>
         </div>
         <div class="quality-tags">
           <span class="badge {playbackState.quality === '4K' ? 'badge-4k' : 'badge-1080p'}">
             {playbackState.quality}
           </span>
-          {#if playbackState.subtitle_url}
-            <span class="badge badge-accent">Subtitles Loaded</span>
+          {#if playbackState.subtitle_ready}
+            <span class="badge badge-recommended">English Subtitles</span>
           {/if}
         </div>
       </div>
@@ -68,17 +65,12 @@
       <div class="media-details">
         <h1 class="media-title">{playbackState.title}</h1>
         <div class="meta-row">
-          <span class="meta-item">💾 {formatBytes(playbackState.file_length)}</span>
-          <span class="meta-item">🎮 {playbackState.player_path.split('/').pop() || 'Media Player'}</span>
+          <span class="meta-item"><HardDrive size={14} /> {formatBytes(playbackState.file_length)}</span>
+          <span class="meta-item"><Tv size={14} /> {playbackState.player_name}</span>
           {#if playbackState.has_next}
-            <span class="meta-item queue-tag">✨ Next Episode in Queue</span>
+            <span class="meta-item queue-tag">Next Episode Queued</span>
           {/if}
         </div>
-      </div>
-
-      <div class="stream-info-box">
-        <div class="info-label">Local Stream Endpoint (Original Quality, No Transcoding)</div>
-        <code class="stream-url">{playbackState.url}</code>
       </div>
 
       {#if actionMessage}
@@ -92,12 +84,7 @@
             on:click={handleNext}
             disabled={isAdvancing || isStopping}
           >
-            {#if isAdvancing}
-              <span class="spinner"></span>
-              <span>Preparing Next Episode...</span>
-            {:else}
-              <span>⏭ Next Episode</span>
-            {/if}
+            <SkipForward size={16} /> Next Episode
           </button>
         {/if}
 
@@ -106,30 +93,19 @@
           on:click={handleStop}
           disabled={isStopping || isAdvancing}
         >
-          {#if isStopping}
-            <span class="spinner"></span>
-            <span>Stopping...</span>
-          {:else}
-            <span>⏹ Stop & Clean Session</span>
-          {/if}
+          <Square size={14} /> Stop Playback
         </button>
       </div>
     </div>
-  {:else if playbackState.status === 'preparing'}
-    <div class="state-card glass-panel">
-      <span class="spinner large"></span>
-      <h2 class="state-title">Preparing Stream & Subtitles</h2>
-      <p class="state-sub">Warming torrent buffers and downloading English subtitles for: {playbackState.title}</p>
-    </div>
   {:else}
-    <div class="idle-card glass-panel">
-      <div class="idle-icon">🍿</div>
-      <h2 class="idle-title">No Active Stream</h2>
+    <div class="idle-card panel">
+      <Film size={48} class="idle-icon" />
+      <h2 class="idle-title">No Active Session</h2>
       <p class="idle-desc">
-        Start watching a movie, series, or anime from the search catalog to control playback here.
+        Select a movie, series, or anime from the search catalog to start playback.
       </p>
       <button class="jump-btn" on:click={onNavigateToSearch}>
-        🔍 Browse Catalogs
+        Search Library
       </button>
     </div>
   {/if}
@@ -143,128 +119,100 @@
   }
 
   .hero-player-card {
-    padding: 36px;
-    background: linear-gradient(135deg, rgba(23, 31, 48, 0.9), rgba(15, 20, 34, 0.95));
-    border: 1px solid rgba(99, 102, 241, 0.4);
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5), 0 0 30px rgba(99, 102, 241, 0.15);
-    border-radius: var(--radius-lg);
+    padding: 32px;
   }
 
   .card-status-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 24px;
-    padding-bottom: 16px;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
     border-bottom: 1px solid var(--border-subtle);
   }
 
   .status-indicator {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
   }
 
-  .live-pulse {
-    width: 10px;
-    height: 10px;
+  .live-dot {
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    background: var(--status-playing);
-    box-shadow: 0 0 10px var(--status-playing);
+    background: var(--status-green);
   }
 
   .status-label {
     font-size: 0.75rem;
     font-weight: 700;
-    letter-spacing: 0.1em;
-    color: var(--status-playing);
+    letter-spacing: 0.05em;
+    color: var(--status-green);
   }
 
   .quality-tags {
     display: flex;
-    gap: 8px;
+    gap: 6px;
   }
 
   .media-title {
-    font-size: 1.85rem;
-    font-weight: 800;
-    margin-bottom: 10px;
-    line-height: 1.25;
+    font-size: 1.6rem;
+    font-weight: 700;
+    margin-bottom: 8px;
   }
 
   .meta-row {
     display: flex;
     align-items: center;
     gap: 16px;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     color: var(--text-secondary);
-    margin-bottom: 24px;
-    flex-wrap: wrap;
+    margin-bottom: 20px;
+  }
+
+  .meta-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .queue-tag {
-    color: #a5b4fc;
-    font-weight: 500;
-  }
-
-  .stream-info-box {
-    background: rgba(8, 11, 17, 0.6);
-    padding: 14px 18px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border-subtle);
-    margin-bottom: 28px;
-  }
-
-  .info-label {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin-bottom: 4px;
-    text-transform: uppercase;
-    font-weight: 600;
-  }
-
-  .stream-url {
-    font-family: monospace;
-    font-size: 0.85rem;
-    color: #a5b4fc;
-    word-break: break-all;
+    color: #93c5fd;
   }
 
   .action-alert {
-    padding: 12px 18px;
+    padding: 10px 14px;
     border-radius: var(--radius-sm);
-    background: rgba(99, 102, 241, 0.15);
-    border: 1px solid rgba(99, 102, 241, 0.3);
-    color: #c7d2fe;
-    margin-bottom: 24px;
-    font-size: 0.9rem;
+    background: var(--bg-surface-active);
+    color: var(--status-amber);
+    margin-bottom: 20px;
+    font-size: 0.85rem;
   }
 
   .playback-controls {
     display: flex;
-    gap: 14px;
+    gap: 12px;
   }
 
   .control-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 10px;
-    padding: 12px 24px;
-    border-radius: var(--radius-md);
+    gap: 8px;
+    padding: 10px 20px;
+    border-radius: var(--radius-sm);
     font-weight: 600;
-    font-size: 0.95rem;
+    font-size: 0.9rem;
   }
 
   .control-btn.primary {
     background: var(--accent-primary);
     color: #fff;
-    box-shadow: var(--accent-glow);
   }
 
   .control-btn.primary:hover:not(:disabled) {
     background: var(--accent-primary-hover);
-    transform: translateY(-1px);
   }
 
   .control-btn.danger {
@@ -277,66 +225,39 @@
     background: rgba(239, 68, 68, 0.25);
   }
 
-  .control-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .state-card, .idle-card {
+  .idle-card {
     text-align: center;
-    padding: 60px 24px;
-    border-radius: var(--radius-lg);
+    padding: 56px 24px;
   }
 
-  .idle-icon {
-    font-size: 3.5rem;
-    margin-bottom: 16px;
+  :global(.idle-icon) {
+    margin-bottom: 14px;
+    color: var(--text-muted);
   }
 
-  .idle-title, .state-title {
-    font-size: 1.5rem;
+  .idle-title {
+    font-size: 1.3rem;
     font-weight: 700;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
   }
 
-  .idle-desc, .state-sub {
+  .idle-desc {
     color: var(--text-secondary);
-    max-width: 480px;
-    margin: 0 auto 24px;
-    font-size: 0.95rem;
+    max-width: 440px;
+    margin: 0 auto 20px;
+    font-size: 0.9rem;
   }
 
   .jump-btn {
     background: var(--accent-primary);
     color: #fff;
-    padding: 10px 22px;
-    border-radius: var(--radius-full);
+    padding: 8px 18px;
+    border-radius: var(--radius-sm);
     font-weight: 600;
-    box-shadow: var(--accent-glow);
+    font-size: 0.85rem;
   }
 
   .jump-btn:hover {
     background: var(--accent-primary-hover);
-  }
-
-  .spinner {
-    display: inline-block;
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  .spinner.large {
-    width: 32px;
-    height: 32px;
-    border-width: 3px;
-    margin-bottom: 16px;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
   }
 </style>

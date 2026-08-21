@@ -7,7 +7,11 @@
     "dev": "wrangler dev",
     "type-check": "tsc --noEmit",
     "types": "wrangler types",
-    "test": "vitest run"
+    "test": "vitest run",
+    "deploy": "wrangler deploy",
+    "migrate": "wrangler d1 migrations apply flix-prod-d1-gateway --remote",
+    "migrate:local": "wrangler d1 migrations apply flix-prod-d1-gateway --local",
+    "invite": "node scripts/create-invite.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241022.0",

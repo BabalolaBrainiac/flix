@@ -1,6 +1,15 @@
 import type { DeviceRecord, Env } from './types';
 import { sha256Hex } from './crypto';
 
+// Returns the caller IP that Cloudflare sets. The client cannot forge this
+// header; Cloudflare overwrites it at the edge. It is the key for per-IP rate
+// limits. A missing value falls back to a single shared bucket, which fails
+// safe by throttling harder, not less.
+export function getClientIp(request: Request): string {
+  const ip = request.headers.get('CF-Connecting-IP');
+  return ip && ip.trim() ? ip.trim() : 'unknown';
+}
+
 export async function authenticateDevice(
   request: Request,
   env: Env
@@ -45,23 +54,6 @@ export async function authenticateDevice(
   return { tokenHash, device };
 }
 
-export function authenticateAdmin(request: Request, env: Env): boolean {
-  const adminSecret = env.ADMIN_SECRET;
-  if (!adminSecret) return false;
-
-  const authHeader = request.headers.get('Authorization');
-  const customHeader = request.headers.get('X-Admin-Secret');
-
-  if (authHeader && authHeader === `Bearer ${adminSecret}`) {
-    return true;
-  }
-  if (customHeader && customHeader === adminSecret) {
-    return true;
-  }
-
-  return false;
-}
-
 export async function checkRateLimit(
   env: Env,
   key: string,
@@ -73,31 +65,23 @@ export async function checkRateLimit(
   const rateKey = `${key}:${windowStart}`;
 
   try {
-    const existing = await env.DB.prepare(
-      'SELECT count FROM rate_limits WHERE key = ?'
+    // The counter must keep increasing above the limit. If it stops at the
+    // limit, every later request in the window still reads count === limit and
+    // stays allowed, so the limit never rejects anything.
+    const result = await env.DB.prepare(
+      `
+        INSERT INTO rate_limits (key, window_start, count)
+        VALUES (?, ?, 1)
+        ON CONFLICT(key) DO UPDATE SET count = rate_limits.count + 1
+        RETURNING count
+      `
     )
-      .bind(rateKey)
+      .bind(rateKey, windowStart)
       .first<{ count: number }>();
 
-    if (existing) {
-      if (existing.count >= limit) {
-        return false;
-      }
-      await env.DB.prepare(
-        'UPDATE rate_limits SET count = count + 1 WHERE key = ?'
-      )
-        .bind(rateKey)
-        .run();
-    } else {
-      await env.DB.prepare(
-        'INSERT INTO rate_limits (key, window_start, count) VALUES (?, ?, 1)'
-      )
-        .bind(rateKey, windowStart)
-        .run();
-    }
-    return true;
+    return typeof result?.count === 'number' && result.count <= limit;
   } catch {
-    // Fail-open for transient rate-limit storage issues
-    return true;
+    // Fail closed on rate limit storage errors
+    return false;
   }
 }

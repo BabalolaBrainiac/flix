@@ -1,26 +1,33 @@
 use crate::desktop::service::DesktopService;
 use crate::desktop::types::{
     DownloadsAction, DownloadsCommand, EpisodesCommand, NextEpisodeCommand, PlayCommand,
-    SearchCommand, SettingsAction, SettingsCommand, StopPlaybackCommand, StreamsCommand,
+    RedeemInviteCommand, SearchCommand, SettingsAction, SettingsCommand, StopPlaybackCommand,
+    StreamsCommand,
 };
 use anyhow::{Context, Result};
 use axum::{
     body::Body,
     extract::{Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::{get, post},
     Json, Router,
 };
+use futures_util::stream::{self, Stream};
 use mime_guess::from_path;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::broadcast;
+use tracing;
 use uuid::Uuid;
 
 #[derive(RustEmbed)]
@@ -29,7 +36,7 @@ struct WebAssets;
 
 #[derive(Clone)]
 pub struct ServerState {
-    pub service: Arc<Mutex<DesktopService>>,
+    pub service: Arc<DesktopService>,
     pub token: String,
     pub port: u16,
     pub shutdown_tx: broadcast::Sender<()>,
@@ -43,9 +50,17 @@ pub struct DesktopServer {
 
 impl DesktopServer {
     pub async fn bind(service: DesktopService) -> Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0")
+        // Port 0 asks the OS for any free port.
+        Self::bind_on(service, 0).await
+    }
+
+    /// Binds the local server to a chosen port. A port of 0 asks the OS for any
+    /// free port. A fixed port lets a second instance run beside the first, for
+    /// example the web client next to the CLI.
+    pub async fn bind_on(service: DesktopService, port: u16) -> Result<Self> {
+        let listener = TcpListener::bind(("127.0.0.1", port))
             .await
-            .context("Failed to bind local HTTP server to 127.0.0.1")?;
+            .with_context(|| format!("Failed to bind local HTTP server to 127.0.0.1:{port}"))?;
         let addr = listener.local_addr()?;
         let port = addr.port();
 
@@ -54,7 +69,7 @@ impl DesktopServer {
         let (shutdown_tx, _) = broadcast::channel(1);
 
         let state = ServerState {
-            service: Arc::new(Mutex::new(service)),
+            service: Arc::new(service),
             token,
             port,
             shutdown_tx,
@@ -87,7 +102,7 @@ impl DesktopServer {
                 let _ = shutdown_rx.recv().await;
             })
             .await
-            .context("Desktop HTTP server encounter an error")?;
+            .context("Desktop HTTP server encountered an error")?;
 
         Ok(())
     }
@@ -96,10 +111,11 @@ impl DesktopServer {
 pub fn create_router(state: ServerState) -> Router {
     Router::new()
         .route("/api/health", get(handle_health))
+        .route("/api/events", get(handle_events))
         .route("/api/status", get(handle_status))
-        .route("/api/activation", get(handle_get_activation))
-        .route("/api/activation/redeem", post(handle_post_redeem_invite))
-        .route("/api/activation/reset", post(handle_post_reset_activation))
+        .route("/api/activation", get(handle_activation_status))
+        .route("/api/activation/redeem", post(handle_redeem_invite))
+        .route("/api/activation/reset", post(handle_reset_activation))
         .route("/api/vlc-guidance", get(handle_get_vlc_guidance))
         .route("/api/diagnostics", get(handle_get_diagnostics))
         .route("/api/search", post(handle_search))
@@ -155,6 +171,30 @@ fn validate_origin_and_token(headers: &HeaderMap, state: &ServerState) -> Result
     Ok(())
 }
 
+fn validate_query_or_header_token(
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+    state: &ServerState,
+) -> Result<(), StatusCode> {
+    if let Some(token) = query_token {
+        if token.trim() == state.token {
+            return Ok(());
+        }
+    }
+    validate_origin_and_token(headers, state)
+}
+
+fn api_error(status: StatusCode, code: &str, message: &str, retryable: bool) -> Response {
+    let body = json!({
+        "error": {
+            "code": code,
+            "message": message,
+            "retryable": retryable
+        }
+    });
+    (status, Json(body)).into_response()
+}
+
 async fn handle_health(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -166,74 +206,79 @@ async fn handle_health(
     })))
 }
 
+async fn handle_events(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, Response> {
+    validate_query_or_header_token(&headers, query.get("token").map(String::as_str), &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+
+    let rx = { state.service.coordinator().subscribe() };
+
+    let initial = rx.borrow().clone();
+    let stream = stream::unfold((rx, Some(initial)), |(mut rx, initial)| async move {
+        if let Some(first) = initial {
+            let data = serde_json::to_string(&first).unwrap_or_default();
+            let event = Event::default().data(data);
+            return Some((Ok(event), (rx, None)));
+        }
+        if rx.changed().await.is_ok() {
+            let val = rx.borrow().clone();
+            let data = serde_json::to_string(&val).unwrap_or_default();
+            let event = Event::default().data(data);
+            Some((Ok(event), (rx, None)))
+        } else {
+            None
+        }
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
 async fn handle_status(
     State(state): State<ServerState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let mut service = state.service.lock().await;
-    let res = service
-        .status()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.status().await.map_err(|e| {
+        tracing::error!("status error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "STATUS_ERROR",
+            "Failed to retrieve playback status",
+            true,
+        )
+    })?;
     Ok(Json(res))
-}
-
-async fn handle_get_activation(
-    State(state): State<ServerState>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let service = state.service.lock().await;
-    let res = service.activation_status();
-    Ok(Json(res))
-}
-
-async fn handle_post_redeem_invite(
-    State(state): State<ServerState>,
-    headers: HeaderMap,
-    Json(cmd): Json<crate::desktop::types::RedeemInviteCommand>,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let service = state.service.lock().await;
-    let res = service
-        .redeem_invite(&cmd)
-        .await
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-    Ok(Json(res))
-}
-
-async fn handle_post_reset_activation(
-    State(state): State<ServerState>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let service = state.service.lock().await;
-    service
-        .reset_activation()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(json!({ "success": true })))
 }
 
 async fn handle_get_vlc_guidance(
     State(state): State<ServerState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let service = state.service.lock().await;
-    let res = service.vlc_guidance();
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.vlc_guidance();
     Ok(Json(res))
 }
 
 async fn handle_get_diagnostics(
     State(state): State<ServerState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let service = state.service.lock().await;
-    let res = service
-        .diagnostics()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.diagnostics().map_err(|e| {
+        tracing::error!("diagnostics error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DIAGNOSTICS_ERROR",
+            "Failed to retrieve diagnostics",
+            false,
+        )
+    })?;
     Ok(Json(res))
 }
 
@@ -241,13 +286,18 @@ async fn handle_search(
     State(state): State<ServerState>,
     headers: HeaderMap,
     Json(command): Json<SearchCommand>,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let service = state.service.lock().await;
-    let res = service
-        .search(&command)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.search(&command).await.map_err(|e| {
+        tracing::error!("search error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "SEARCH_ERROR",
+            "Failed to perform search query",
+            true,
+        )
+    })?;
     Ok(Json(res))
 }
 
@@ -255,13 +305,18 @@ async fn handle_episodes(
     State(state): State<ServerState>,
     headers: HeaderMap,
     Json(command): Json<EpisodesCommand>,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let service = state.service.lock().await;
-    let res = service
-        .episodes(&command)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.episodes(&command).await.map_err(|e| {
+        tracing::error!("episodes error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "EPISODES_ERROR",
+            "Failed to retrieve episode list",
+            true,
+        )
+    })?;
     Ok(Json(res))
 }
 
@@ -269,13 +324,18 @@ async fn handle_streams(
     State(state): State<ServerState>,
     headers: HeaderMap,
     Json(command): Json<StreamsCommand>,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let service = state.service.lock().await;
-    let res = service
-        .streams(&command)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.streams(&command).await.map_err(|e| {
+        tracing::error!("streams error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "STREAMS_ERROR",
+            "Failed to retrieve stream sources",
+            true,
+        )
+    })?;
     Ok(Json(res))
 }
 
@@ -283,54 +343,78 @@ async fn handle_play(
     State(state): State<ServerState>,
     headers: HeaderMap,
     Json(command): Json<PlayCommand>,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let mut service = state.service.lock().await;
-    let res = service
-        .play(command)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(res))
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.play(command).await.map_err(|e| {
+        tracing::error!("play error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "PLAY_ERROR",
+            "Failed to start playback",
+            true,
+        )
+    })?;
+    Ok((StatusCode::ACCEPTED, Json(res)))
 }
 
 async fn handle_next(
     State(state): State<ServerState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let mut service = state.service.lock().await;
-    let res = service
-        .next(NextEpisodeCommand)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.next(NextEpisodeCommand).await.map_err(|e| {
+        tracing::error!("next error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "NEXT_EPISODE_ERROR",
+            "Failed to advance to next episode",
+            false,
+        )
+    })?;
     Ok(Json(res))
 }
 
 async fn handle_stop(
     State(state): State<ServerState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let mut service = state.service.lock().await;
-    let res = service
-        .stop(StopPlaybackCommand)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.stop(StopPlaybackCommand).await.map_err(|e| {
+        tracing::error!("stop error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "STOP_ERROR",
+            "Failed to stop playback",
+            false,
+        )
+    })?;
     Ok(Json(res))
 }
 
 async fn handle_get_downloads(
     State(state): State<ServerState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let service = state.service.lock().await;
-    let res = service
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state
+        .service
         .downloads(&DownloadsCommand {
             action: DownloadsAction::List,
         })
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!("downloads error: {:#}", e);
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DOWNLOADS_ERROR",
+                "Failed to list downloads",
+                true,
+            )
+        })?;
     Ok(Json(res))
 }
 
@@ -345,11 +429,18 @@ async fn handle_post_downloads(
     State(state): State<ServerState>,
     headers: HeaderMap,
     Json(payload): Json<PostDownloadsPayload>,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let service = state.service.lock().await;
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
     let action = if payload.action == "add" {
-        let magnet = payload.magnet.ok_or(StatusCode::BAD_REQUEST)?;
+        let magnet = payload.magnet.ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "INVALID_PARAMETER",
+                "Missing magnet parameter",
+                false,
+            )
+        })?;
         DownloadsAction::Add {
             magnet,
             file_index: payload.file_index,
@@ -357,35 +448,99 @@ async fn handle_post_downloads(
     } else {
         DownloadsAction::List
     };
-    let res = service
+    let res = state
+        .service
         .downloads(&DownloadsCommand { action })
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!("downloads error: {:#}", e);
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DOWNLOADS_ERROR",
+                "Failed to process download action",
+                false,
+            )
+        })?;
     Ok(Json(res))
 }
 
 async fn handle_get_settings(
     State(state): State<ServerState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let service = state.service.lock().await;
-    let res = service
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state
+        .service
         .settings(&SettingsCommand {
             action: SettingsAction::Get,
         })
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!("settings error: {:#}", e);
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "SETTINGS_ERROR",
+                "Failed to retrieve settings",
+                false,
+            )
+        })?;
     Ok(Json(res))
 }
 
 async fn handle_quit(
     State(state): State<ServerState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, StatusCode> {
-    validate_origin_and_token(&headers, &state)?;
-    let mut service = state.service.lock().await;
-    let _ = service.stop(StopPlaybackCommand).await;
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let _ = state.service.stop(StopPlaybackCommand).await;
     let _ = state.shutdown_tx.send(());
+    Ok(Json(json!({ "success": true })))
+}
+
+async fn handle_activation_status(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    Ok(Json(state.service.activation_status()))
+}
+
+async fn handle_redeem_invite(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<RedeemInviteCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.redeem_invite(&command).await.map_err(|e| {
+        tracing::error!("activation error: {:#}", e);
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            "ACTIVATION_ERROR",
+            "Device activation failed",
+            true,
+        )
+    })?;
+    Ok(Json(res))
+}
+
+async fn handle_reset_activation(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state.service.reset_activation().map_err(|e| {
+        tracing::error!("activation reset error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ACTIVATION_RESET_ERROR",
+            "Device activation reset failed",
+            false,
+        )
+    })?;
     Ok(Json(json!({ "success": true })))
 }
 

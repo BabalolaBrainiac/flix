@@ -1,0 +1,227 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust-check:
+    name: Rust Gates (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web bundle for desktop compile
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check code formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy linter
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run test suite
+        run: cargo test --all-features
+
+  web-check:
+    name: Web Frontend Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check Svelte components
+        run: npm run check
+
+      - name: Run frontend unit tests
+        run: npm test
+
+      - name: Build web production bundle
+        run: npm run build
+
+  gateway-check:
+    name: Cloudflare Gateway Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: gateway/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check gateway
+        run: npx tsc --noEmit
+
+      - name: Run gateway unit tests
+        run: npm test
+
+  build-packages:
+    name: Build Packages (main only)
+    needs: [rust-check, web-check, gateway-check]
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: universal-apple-darwin
+            artifact_name: Flix-macOS-universal.dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: Flix-Windows-x64-Setup.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build web bundle
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      - name: Build macOS Universal DMG
+        if: matrix.os == 'macos-latest'
+        run: |
+          cargo build --release --features web-ui --target aarch64-apple-darwin --bin flix-desktop
+          cargo build --release --features web-ui --target x86_64-apple-darwin --bin flix-desktop
+          mkdir -p target/universal/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/flix-desktop \
+            target/x86_64-apple-darwin/release/flix-desktop \
+            -output target/universal/release/flix-desktop
+          cargo packager --release --formats dmg --target universal-apple-darwin --binaries-dir target/universal/release
+
+      - name: Build Windows NSIS Installer
+        if: matrix.os == 'windows-latest'
+        run: |
+          cargo build --release --features web-ui --target x86_64-pc-windows-msvc --bin flix-desktop
+          cargo packager --release --formats nsis --target x86_64-pc-windows-msvc --binaries-dir target/x86_64-pc-windows-msvc/release
+
+      # cargo-packager names the file after the product and the version. The
+      # rolling release below needs a name that does not change, so the download
+      # URL stays the same after every merge to main.
+      - name: Stage the package under a stable name
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          built="$(find target/packager -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.exe' \) | head -n 1)"
+          if [ -z "$built" ]; then
+            echo "No package file was produced under target/packager."
+            exit 1
+          fi
+          cp "$built" "dist/${{ matrix.artifact_name }}"
+          ls -l dist
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+          retention-days: 14
+
+  publish-rolling-release:
+    name: Publish Rolling Main Release
+    needs: [build-packages]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the built packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          find . -type f -not -name 'SHA256SUMS.txt' -exec sha256sum {} + > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # The tag moves to the newest commit on main on every run. The download
+      # URL under this tag therefore always serves the newest package.
+      - name: Publish the rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-main
+          name: Latest main build
+          body: |
+            Automatic package build of the newest commit on main.
+
+            Commit: ${{ github.sha }}
+
+            These download links do not change after a merge:
+
+            - macOS: https://github.com/${{ github.repository }}/releases/download/latest-main/Flix-macOS-universal.dmg
+            - Windows: https://github.com/${{ github.repository }}/releases/download/latest-main/Flix-Windows-x64-Setup.exe
+          target_commitish: ${{ github.sha }}
+          draft: false
+          prerelease: true
+          make_latest: false
+          files: |
+            release-artifacts/**

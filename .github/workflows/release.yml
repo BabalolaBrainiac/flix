@@ -141,8 +141,6 @@ jobs:
           cargo build --release --features web-ui --target x86_64-pc-windows-msvc --bin flix-desktop
           cargo packager --release --formats nsis --target x86_64-pc-windows-msvc --binaries-dir target/x86_64-pc-windows-msvc/release
 
-      # Publish a fixed file name so a release download URL is predictable from
-      # the version tag alone.
       - name: Stage the package under a stable name
         shell: bash
         run: |

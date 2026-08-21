@@ -5,9 +5,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # Manual trigger to build the installers on demand from any branch, for
-  # example to test packaging before a merge. The rolling release stays
-  # main-only, so a manual run never publishes.
   workflow_dispatch:
 
 permissions:
@@ -17,6 +14,7 @@ jobs:
   rust-check:
     name: Rust Gates (fmt, clippy, test)
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -55,6 +53,7 @@ jobs:
   web-check:
     name: Web Frontend Checks
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     defaults:
       run:
         working-directory: web
@@ -84,6 +83,7 @@ jobs:
   gateway-check:
     name: Cloudflare Gateway Checks
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     defaults:
       run:
         working-directory: gateway
@@ -109,9 +109,9 @@ jobs:
 
   build-packages:
     name: Build Packages
-    needs: [rust-check, web-check, gateway-check]
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -163,9 +163,6 @@ jobs:
           cargo build --release --features web-ui --target x86_64-pc-windows-msvc --bin flix-desktop
           cargo packager --release --formats nsis --target x86_64-pc-windows-msvc --binaries-dir target/x86_64-pc-windows-msvc/release
 
-      # cargo-packager names the file after the product and the version. The
-      # rolling release below needs a name that does not change, so the download
-      # URL stays the same after every merge to main.
       - name: Stage the package under a stable name
         shell: bash
         run: |
@@ -207,8 +204,6 @@ jobs:
           find . -type f -not -name 'SHA256SUMS.txt' -exec sha256sum {} + > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      # The tag moves to the newest commit on main on every run. The download
-      # URL under this tag therefore always serves the newest package.
       - name: Publish the rolling release
         uses: softprops/action-gh-release@v2
         with:

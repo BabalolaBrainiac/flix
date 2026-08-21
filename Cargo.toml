@@ -59,7 +59,7 @@ product-name = "Flix"
 identifier = "com.babalolabrainiac.flix"
 category = "Entertainment"
 authors = ["Flix Contributors"]
-about = "Private desktop torrent streaming client"
+description = "Private desktop torrent streaming client"
 before-packaging-command = "cd web && npm ci && npm run build"
 
 [[package.metadata.packager.binaries]]
@@ -70,4 +70,3 @@ main = true
 minimum-system-version = "11.0"
 
 [package.metadata.packager.nsis]
-appdata-user = true

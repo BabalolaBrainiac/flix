@@ -79,3 +79,6 @@ Thumbs.db
 # Project documents. Only README.md goes to the remote.
 *.md
 !/README.md
+
+# Gateway admin helper. Owner-local operational tooling, kept out of the remote.
+/gateway/scripts/admin.sh

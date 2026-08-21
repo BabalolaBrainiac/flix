@@ -1,48 +1,105 @@
-import type { Env, SubtitleSearchResult } from '../types';
+import type { Env, SubtitleResolveResponse } from '../types';
 import { authenticateDevice, checkRateLimit } from '../auth';
 
-export async function handleSubtitlesSearch(request: Request, env: Env): Promise<Response> {
+const MAX_SUBTITLE_SIZE = 10 * 1024 * 1024; // 10 MiB
+
+function isValidImdbId(id: string): boolean {
+  return /^tt\d{6,10}$/.test(id) || /^\d{6,10}$/.test(id);
+}
+
+function isApprovedProviderUrl(urlStr: string): boolean {
+  try {
+    const parsed = new URL(urlStr);
+    if (parsed.protocol !== 'https:') return false;
+    const hostname = parsed.hostname.toLowerCase();
+    return (
+      hostname.endsWith('.opensubtitles.org') ||
+      hostname.endsWith('.opensubtitles.com') ||
+      hostname === 'opensubtitles.org' ||
+      hostname === 'opensubtitles.com'
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function handleSubtitlesResolve(request: Request, env: Env): Promise<Response> {
   const authRes = await authenticateDevice(request, env);
   if (authRes instanceof Response) return authRes;
 
-  const rateOk = await checkRateLimit(env, `subsearch:${authRes.tokenHash}`, 40, 60);
+  const rateOk = await checkRateLimit(env, `subresolve:${authRes.tokenHash}`, 30, 60);
   if (!rateOk) {
-    return Response.json({ error: 'Subtitle search rate limit exceeded' }, { status: 429 });
+    return Response.json({ error: 'Subtitle resolution rate limit exceeded' }, { status: 429 });
   }
 
-  const url = new URL(request.url);
-  const query = (url.searchParams.get('query') || '').trim();
-  const imdbId = (url.searchParams.get('imdb_id') || '').trim();
-  const season = url.searchParams.get('season');
-  const episode = url.searchParams.get('episode');
+  let body: any;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  // Validate strict request parameters
+  const imdbIdRaw = typeof body.imdb_id === 'string' ? body.imdb_id.trim() : '';
+  if (!imdbIdRaw || !isValidImdbId(imdbIdRaw)) {
+    // An IMDb id is not a secret. Logging the rejected value shows when a
+    // client sends an id the gateway cannot use, for example an episode
+    // stream id like "tt0903747:1:1".
+    console.log('subresolve_bad_imdb', JSON.stringify({ imdb_id: imdbIdRaw }));
+    return Response.json(
+      { error: 'Invalid or missing imdb_id parameter. Must be a valid IMDb ID (e.g. tt10161886).' },
+      { status: 400 }
+    );
+  }
+  console.log(
+    'subresolve_request',
+    JSON.stringify({ imdb_id: imdbIdRaw, season: body.season, episode: body.episode })
+  );
+
+  const season = typeof body.season === 'number' && Number.isInteger(body.season) && body.season >= 0
+    ? body.season
+    : undefined;
+  const episode = typeof body.episode === 'number' && Number.isInteger(body.episode) && body.episode >= 0
+    ? body.episode
+    : undefined;
+
+  // Reject unexpected parameters (magnets, hashes, release names, arbitrary URLs)
+  const forbiddenKeys = ['magnet', 'hash', 'info_hash', 'url', 'release', 'file_id', 'query'];
+  for (const key of forbiddenKeys) {
+    if (key in body) {
+      return Response.json(
+        { error: `Forbidden parameter '${key}' provided. Only imdb_id, season, and episode are permitted.` },
+        { status: 400 }
+      );
+    }
+  }
 
   const apiKey = env.OPENSUBTITLES_API_KEY;
   if (!apiKey) {
-    return Response.json({ results: [], notes: ['OpenSubtitles is not configured on gateway'] });
+    const noMatch: SubtitleResolveResponse = {
+      status: 'no_match',
+      reason: 'Subtitle gateway provider is not configured',
+    };
+    return Response.json(noMatch);
   }
 
-  const openSubtitlesUrl = new URL('https://api.opensubtitles.com/api/v1/subtitles');
-  openSubtitlesUrl.searchParams.set('languages', 'en');
-  openSubtitlesUrl.searchParams.set('order_by', 'download_count');
-  openSubtitlesUrl.searchParams.set('order_direction', 'desc');
+  const numericImdb = imdbIdRaw.replace(/^tt/, '');
+  const searchUrl = new URL('https://api.opensubtitles.com/api/v1/subtitles');
+  searchUrl.searchParams.set('languages', 'en');
+  searchUrl.searchParams.set('order_by', 'download_count');
+  searchUrl.searchParams.set('order_direction', 'desc');
+  searchUrl.searchParams.set('imdb_id', numericImdb);
 
-  if (imdbId) {
-    const numericImdb = imdbId.replace(/^tt/, '');
-    openSubtitlesUrl.searchParams.set('imdb_id', numericImdb);
+  if (season !== undefined) {
+    searchUrl.searchParams.set('season_number', season.toString());
   }
-  if (query && !imdbId) {
-    openSubtitlesUrl.searchParams.set('query', query);
-  }
-  if (season) {
-    openSubtitlesUrl.searchParams.set('season_number', season);
-  }
-  if (episode) {
-    openSubtitlesUrl.searchParams.set('episode_number', episode);
+  if (episode !== undefined) {
+    searchUrl.searchParams.set('episode_number', episode.toString());
   }
 
   try {
     const userAgent = env.OPENSUBTITLES_USER_AGENT || 'Flix Gateway v0.1.0';
-    const res = await fetch(openSubtitlesUrl.toString(), {
+    const searchRes = await fetch(searchUrl.toString(), {
       headers: {
         'Api-Key': apiKey,
         'User-Agent': userAgent,
@@ -50,84 +107,65 @@ export async function handleSubtitlesSearch(request: Request, env: Env): Promise
       },
     });
 
-    if (!res.ok) {
-      return Response.json(
-        { error: `OpenSubtitles search failed (${res.status})` },
-        { status: 502 }
-      );
+    if (!searchRes.ok) {
+      console.log('subresolve_search_failed', JSON.stringify({ status: searchRes.status }));
+      const noMatch: SubtitleResolveResponse = {
+        status: 'no_match',
+        reason: 'Provider search returned no verified matches',
+      };
+      return Response.json(noMatch);
     }
 
-    const data: any = await res.json();
-    const results: SubtitleSearchResult[] = [];
-    if (Array.isArray(data.data)) {
-      for (const item of data.data) {
-        const file = item.attributes?.files?.[0];
-        if (file?.file_id) {
-          results.push({
-            id: item.id,
-            file_id: file.file_id,
-            file_name: item.attributes.release || item.attributes.feature_details?.movie_name,
-            release: item.attributes.release,
-            download_count: item.attributes.download_count || 0,
-          });
-        }
+    const searchData: any = await searchRes.json();
+    if (!Array.isArray(searchData.data) || searchData.data.length === 0) {
+      const noMatch: SubtitleResolveResponse = {
+        status: 'no_match',
+        reason: 'No English subtitles found for media',
+      };
+      return Response.json(noMatch);
+    }
+
+    // Find best candidate with valid file_id
+    let bestCandidate: { file_id: number; file_name?: string } | null = null;
+    for (const item of searchData.data) {
+      const file = item.attributes?.files?.[0];
+      if (file?.file_id && typeof file.file_id === 'number') {
+        bestCandidate = {
+          file_id: file.file_id,
+          file_name: item.attributes?.release || file.file_name,
+        };
+        break;
       }
     }
 
-    return Response.json({ results });
-  } catch (e: any) {
-    return Response.json({ error: `Subtitle search error: ${e.message}` }, { status: 502 });
-  }
-}
+    if (!bestCandidate) {
+      const noMatch: SubtitleResolveResponse = {
+        status: 'no_match',
+        reason: 'No downloadable English subtitle files in provider results',
+      };
+      return Response.json(noMatch);
+    }
 
-export async function handleSubtitlesDownload(request: Request, env: Env): Promise<Response> {
-  const authRes = await authenticateDevice(request, env);
-  if (authRes instanceof Response) return authRes;
+    // Acquire session token from Durable Object
+    const doId = env.OPENSUBTITLES_COORDINATOR.idFromName('global_coordinator');
+    const coordinator: any = env.OPENSUBTITLES_COORDINATOR.get(doId);
+    let sessionToken: string;
+    if (typeof coordinator.getSession === 'function') {
+      const session = await coordinator.getSession();
+      sessionToken = session.token;
+    } else {
+      const tokenRes = await coordinator.fetch('https://coordinator/token', { method: 'POST' });
+      if (!tokenRes.ok) {
+        return Response.json(
+          { error: 'Failed to acquire subtitle session' },
+          { status: 502 }
+        );
+      }
+      const tokenData: any = await tokenRes.json();
+      sessionToken = tokenData.token;
+    }
 
-  const rateOk = await checkRateLimit(env, `subdl:${authRes.tokenHash}`, 20, 60);
-  if (!rateOk) {
-    return Response.json({ error: 'Subtitle download rate limit exceeded' }, { status: 429 });
-  }
-
-  let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json({ error: 'Invalid JSON payload' }, { status: 400 });
-  }
-
-  const fileId = body.file_id;
-  if (!fileId || typeof fileId !== 'number') {
-    return Response.json({ error: 'Missing or invalid file_id' }, { status: 400 });
-  }
-
-  const apiKey = env.OPENSUBTITLES_API_KEY;
-  const userAgent = env.OPENSUBTITLES_USER_AGENT || 'Flix Gateway v0.1.0';
-
-  if (!apiKey) {
-    return Response.json({ error: 'OpenSubtitles is not configured on gateway' }, { status: 503 });
-  }
-
-  // Request token from coordinator Durable Object
-  const id = env.OPENSUBTITLES_COORDINATOR.idFromName('global_coordinator');
-  const coordinator = env.OPENSUBTITLES_COORDINATOR.get(id);
-
-  const tokenRes = await coordinator.fetch('https://coordinator/token', {
-    method: 'POST',
-  });
-
-  if (!tokenRes.ok) {
-    const errorData: any = await tokenRes.json().catch(() => ({}));
-    return Response.json(
-      { error: errorData.error || 'Failed to acquire OpenSubtitles download session' },
-      { status: tokenRes.status }
-    );
-  }
-
-  const tokenData: any = await tokenRes.json();
-  const sessionToken = tokenData.token;
-
-  try {
+    // Request download link
     const downloadRes = await fetch('https://api.opensubtitles.com/api/v1/download', {
       method: 'POST',
       headers: {
@@ -137,37 +175,69 @@ export async function handleSubtitlesDownload(request: Request, env: Env): Promi
         'User-Agent': userAgent,
         Accept: 'application/json',
       },
-      body: JSON.stringify({ file_id: fileId }),
+      body: JSON.stringify({ file_id: bestCandidate.file_id }),
     });
 
     if (!downloadRes.ok) {
-      return Response.json(
-        { error: `OpenSubtitles download API rejected request (${downloadRes.status})` },
-        { status: 502 }
-      );
+      const noMatch: SubtitleResolveResponse = {
+        status: 'no_match',
+        reason: 'Provider rejected subtitle download request',
+      };
+      return Response.json(noMatch);
     }
 
     const downloadData: any = await downloadRes.json();
     const downloadLink = downloadData.link;
-    if (!downloadLink) {
-      return Response.json({ error: 'OpenSubtitles returned no download link' }, { status: 502 });
+    if (!downloadLink || !isApprovedProviderUrl(downloadLink)) {
+      return Response.json(
+        { error: 'Provider returned an unapproved or invalid download link' },
+        { status: 502 }
+      );
     }
 
-    // Fetch subtitle text bytes from CDN link
     const fileRes = await fetch(downloadLink);
     if (!fileRes.ok) {
-      return Response.json({ error: 'Failed to download subtitle file from provider CDN' }, { status: 502 });
+      return Response.json(
+        { error: 'Failed to retrieve subtitle file from provider' },
+        { status: 502 }
+      );
     }
 
-    const subtitleBytes = await fileRes.arrayBuffer();
+    const contentLength = Number(fileRes.headers.get('content-length') || 0);
+    if (contentLength > MAX_SUBTITLE_SIZE) {
+      return Response.json(
+        { error: 'Subtitle file exceeded size limit' },
+        { status: 502 }
+      );
+    }
 
-    return new Response(subtitleBytes, {
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'public, max-age=86400',
-      },
-    });
-  } catch (e: any) {
-    return Response.json({ error: `Subtitle download error: ${e.message}` }, { status: 502 });
+    const textContent = await fileRes.text();
+    if (textContent.length > MAX_SUBTITLE_SIZE) {
+      return Response.json(
+        { error: 'Subtitle file exceeded size limit' },
+        { status: 502 }
+      );
+    }
+
+    const matchedResponse: SubtitleResolveResponse = {
+      status: 'matched',
+      file_id: bestCandidate.file_id,
+      file_name: bestCandidate.file_name,
+      content: textContent,
+      format: 'srt',
+    };
+
+    return Response.json(matchedResponse);
+  } catch (err: any) {
+    // Log the message only. A stack can carry a signed provider download URL,
+    // which is a short-lived credential and must not enter the logs.
+    console.error(
+      'subresolve_error',
+      JSON.stringify({ message: err && err.message ? String(err.message) : 'unknown' })
+    );
+    return Response.json(
+      { error: 'Subtitle resolution encountered an unexpected error' },
+      { status: 502 }
+    );
   }
 }

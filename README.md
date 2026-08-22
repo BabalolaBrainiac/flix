@@ -59,8 +59,24 @@ Use these options:
 
 - `--no-open`: Start the server, but do not open the browser.
 - `--check`: Run a system check and exit.
+- `--port <PORT>`: Bind the local web server to a fixed port. Omit it to use any free port. A fixed port lets a second instance run beside the first.
 
 The desktop server binds only to `127.0.0.1`. Every API request requires a token that the process creates in memory.
+
+### Install a packaged build on macOS
+
+The macOS DMG from the release page is not signed with an Apple Developer ID, so macOS blocks the first launch with a message like "Apple could not verify Flix is free of malware". This is expected for an unsigned app. The application is safe to run; macOS only refuses to launch it automatically.
+
+Open it once with either method:
+
+1. In Finder, right-click (or Control-click) `Flix`, choose **Open**, then **Open** again in the dialog. macOS remembers the choice for later launches.
+2. Or remove the download quarantine flag in a terminal:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/Flix.app
+   ```
+
+A locally built binary does not show this message, because only files downloaded through a browser get the quarantine flag.
 
 ## Gateway
 

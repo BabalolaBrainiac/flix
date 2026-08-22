@@ -147,6 +147,14 @@
     }
   }
 
+  // Poster URLs that failed to load. A broken image falls back to the film
+  // placeholder instead of showing the browser's broken-image icon.
+  let failedPosters = new Set<string>();
+  function markPosterFailed(url: string | undefined) {
+    if (!url) return;
+    failedPosters = new Set(failedPosters).add(url);
+  }
+
   function formatEpisodeTitle(ep: EpisodeSummary): string {
     const code = `S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`;
     const t = ep.title?.trim();
@@ -217,8 +225,13 @@
         {#each filteredItems as item (item.id)}
           <button class="grid-card" on:click={() => selectItem(item)}>
             <div class="poster-card">
-              {#if item.poster}
-                <img src={item.poster} alt={item.name} loading="lazy" />
+              {#if item.poster && !failedPosters.has(item.poster)}
+                <img
+                  src={item.poster}
+                  alt={item.name}
+                  loading="lazy"
+                  on:error={() => markPosterFailed(item.poster)}
+                />
               {:else}
                 <div class="poster-placeholder">
                   <Film size={32} />
@@ -257,8 +270,12 @@
 
       <div class="detail-header">
         <div class="detail-poster">
-          {#if selectedItem.poster}
-            <img src={selectedItem.poster} alt={selectedItem.name} />
+          {#if selectedItem.poster && !failedPosters.has(selectedItem.poster)}
+            <img
+              src={selectedItem.poster}
+              alt={selectedItem.name}
+              on:error={() => markPosterFailed(selectedItem?.poster)}
+            />
           {:else}
             <div class="poster-placeholder">
               <Film size={48} />

@@ -1,4 +1,4 @@
-const SUBTITLE_LANGUAGES: &[&str] = &["eng", "en", "english"];
+const PREFERRED_LANGUAGES: &[&str] = &["eng", "en", "english"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LanguagePolicy {
@@ -9,11 +9,11 @@ pub struct LanguagePolicy {
 impl LanguagePolicy {
     /// Creates the standard playback policy.
     ///
-    /// Audio: no forced language, so the player uses the file's default audio
-    /// track. That track is the original language of the content, for example
-    /// Japanese for anime or Korean for a Korean film. `FLIX_AUDIO_LANGUAGE`
-    /// overrides this for a user who wants to force a language such as an
-    /// English dub.
+    /// Audio: prefer English, then fall back to the file's default track. This
+    /// keeps English content in English and lets an original-language-only file,
+    /// such as anime with Japanese audio, fall back to that track instead of a
+    /// dub the release happened to order first. `FLIX_AUDIO_LANGUAGE` overrides
+    /// the audio preference, for example `jpn,ja` to force Japanese.
     ///
     /// Subtitles: prefer English.
     pub fn standard() -> Self {
@@ -30,11 +30,10 @@ impl LanguagePolicy {
             }
         });
 
-        let english: Vec<String> = SUBTITLE_LANGUAGES.iter().map(|&s| s.to_string()).collect();
+        let english: Vec<String> = PREFERRED_LANGUAGES.iter().map(|&s| s.to_string()).collect();
 
         Self {
-            // Empty means the player keeps the file's default audio track.
-            audio_languages: audio_override.unwrap_or_default(),
+            audio_languages: audio_override.unwrap_or_else(|| english.clone()),
             subtitle_languages: english,
         }
     }

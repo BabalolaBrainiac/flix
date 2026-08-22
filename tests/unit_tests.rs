@@ -38,6 +38,7 @@ fn test_library_persistence_and_sorting() {
         added_at: SystemTime::now(),
         last_played: None,
         meta: None,
+        output_name: None,
     };
 
     let e2 = Entry {
@@ -47,6 +48,7 @@ fn test_library_persistence_and_sorting() {
         added_at: SystemTime::now() + std::time::Duration::from_secs(10),
         last_played: None,
         meta: None,
+        output_name: None,
     };
 
     lib.upsert(e1);

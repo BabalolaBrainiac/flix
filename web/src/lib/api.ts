@@ -164,6 +164,16 @@ export async function addDownload(magnet: string, fileIndex?: number): Promise<D
   });
 }
 
+export async function removeDownload(infoHash: string): Promise<DownloadsResponse> {
+  return request('/api/downloads', {
+    method: 'POST',
+    body: JSON.stringify({
+      action: 'remove',
+      info_hash: infoHash,
+    }),
+  });
+}
+
 export async function getSettings(): Promise<SettingsResponse> {
   return request('/api/settings');
 }

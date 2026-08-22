@@ -32,6 +32,9 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // Remove playback caches left behind by a previous crash or force quit.
+    flix::config::sweep_orphaned_playback_caches();
+
     let args = Args::parse();
     let config = Config::load()?;
     let service = DesktopService::new(config);

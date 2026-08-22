@@ -1,13 +1,27 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getDownloads, addDownload } from '../lib/api';
+  import { getDownloads, addDownload, removeDownload } from '../lib/api';
   import type { DownloadEntrySummary } from '../lib/types';
-  import { Download, RefreshCw, Plus, HardDrive, AlertCircle } from 'lucide-svelte';
+  import { Download, RefreshCw, Plus, HardDrive, AlertCircle, Trash2 } from 'lucide-svelte';
 
   let entries: DownloadEntrySummary[] = [];
   let isLoading = false;
   let magnetInput = '';
   let isAdding = false;
+  let removingHash: string | null = null;
+
+  async function handleRemove(infoHash: string, name: string) {
+    if (!confirm(`Delete "${name}" and its downloaded files from disk?`)) return;
+    removingHash = infoHash;
+    try {
+      const res = await removeDownload(infoHash);
+      entries = res.entries;
+    } catch (e) {
+      // Surface nothing noisy; the list refresh reflects the outcome.
+    } finally {
+      removingHash = null;
+    }
+  }
   let message = '';
   let isError = false;
 
@@ -103,6 +117,14 @@
                 <code class="hash-tag">{entry.info_hash}</code>
               </div>
             </div>
+            <button
+              class="delete-btn"
+              title="Delete download and files"
+              on:click={() => handleRemove(entry.info_hash, entry.display_name)}
+              disabled={removingHash === entry.info_hash}
+            >
+              <Trash2 size={16} />
+            </button>
           </div>
         {/each}
       </div>
@@ -313,4 +335,23 @@
   @keyframes spin {
     to { transform: rotate(360deg); }
   }
+
+  .delete-btn {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid transparent;
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+  .delete-btn:hover {
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--status-red);
+  }
+  .delete-btn:disabled { opacity: 0.5; }
 </style>

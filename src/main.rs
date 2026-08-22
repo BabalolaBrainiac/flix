@@ -43,6 +43,9 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Remove playback caches left behind by a previous crash or force quit.
+    flix::config::sweep_orphaned_playback_caches();
+
     let cli = Cli::parse();
     let config = Config::load()?;
     if matches!(&cli.command, Some(Commands::InstallPlayer)) {
@@ -204,6 +207,7 @@ async fn build_entry(
         added_at: SystemTime::now(),
         last_played: None,
         meta: Some(metadata),
+        output_name: flix::library::output_name_from_files(files),
     })
 }
 

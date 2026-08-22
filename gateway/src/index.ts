@@ -1,6 +1,15 @@
 import type { Env } from './types';
 import { handleRedeemInvite, handleDeviceStatus } from './routes/invites';
 import { handleSubtitlesResolve } from './routes/subtitles';
+import {
+  requireAdmin,
+  adminPageHtml,
+  handleAdminCreateInvite,
+  handleAdminListInvites,
+  handleAdminRevokeInvite,
+  handleAdminListDevices,
+  handleAdminRevokeDevice,
+} from './routes/admin';
 import { checkRateLimit, getClientIp } from './auth';
 
 export { OpenSubtitlesCoordinator } from './durable_object';
@@ -67,6 +76,35 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   if (url.pathname === '/v1/subtitles/resolve' && request.method === 'POST') {
     return await handleSubtitlesResolve(request, env);
+  }
+
+  // Admin page. The HTML carries no secret; the page asks for it and sends it
+  // as a bearer token on each API call below.
+  if (url.pathname === '/v1/admin' && request.method === 'GET') {
+    return new Response(adminPageHtml(), {
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
+
+  if (url.pathname.startsWith('/v1/admin/')) {
+    const denied = await requireAdmin(request, env);
+    if (denied) return denied;
+
+    if (url.pathname === '/v1/admin/invites' && request.method === 'GET') {
+      return await handleAdminListInvites(env);
+    }
+    if (url.pathname === '/v1/admin/invites' && request.method === 'POST') {
+      return await handleAdminCreateInvite(request, env);
+    }
+    if (url.pathname === '/v1/admin/invites/revoke' && request.method === 'POST') {
+      return await handleAdminRevokeInvite(request, env);
+    }
+    if (url.pathname === '/v1/admin/devices' && request.method === 'GET') {
+      return await handleAdminListDevices(env);
+    }
+    if (url.pathname === '/v1/admin/devices/revoke' && request.method === 'POST') {
+      return await handleAdminRevokeDevice(request, env);
+    }
   }
 
   return Response.json({ error: 'Endpoint not found' }, { status: 404 });

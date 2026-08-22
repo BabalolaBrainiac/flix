@@ -128,18 +128,18 @@ jobs:
         run: |
           cargo build --release --features web-ui --target aarch64-apple-darwin --bin flix-desktop
           cargo build --release --features web-ui --target x86_64-apple-darwin --bin flix-desktop
-          mkdir -p target/universal/release
+          mkdir -p target/universal-apple-darwin/release
           lipo -create \
             target/aarch64-apple-darwin/release/flix-desktop \
             target/x86_64-apple-darwin/release/flix-desktop \
-            -output target/universal/release/flix-desktop
-          cargo packager --release --formats dmg --target universal-apple-darwin --binaries-dir target/universal/release
+            -output target/universal-apple-darwin/release/flix-desktop
+          cargo packager --release --formats dmg --target universal-apple-darwin --binaries-dir target/universal-apple-darwin/release --out-dir target/packager
 
       - name: Build Windows NSIS Installer
         if: matrix.os == 'windows-latest'
         run: |
           cargo build --release --features web-ui --target x86_64-pc-windows-msvc --bin flix-desktop
-          cargo packager --release --formats nsis --target x86_64-pc-windows-msvc --binaries-dir target/x86_64-pc-windows-msvc/release
+          cargo packager --release --formats nsis --target x86_64-pc-windows-msvc --binaries-dir target/x86_64-pc-windows-msvc/release --out-dir target/packager
 
       - name: Stage the package under a stable name
         shell: bash

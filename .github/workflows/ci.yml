@@ -177,7 +177,7 @@ jobs:
           ls -l dist
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/${{ matrix.artifact_name }}
@@ -192,7 +192,7 @@ jobs:
       contents: write
     steps:
       - name: Download the built packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-artifacts
           merge-multiple: true
@@ -205,7 +205,7 @@ jobs:
           cat SHA256SUMS.txt
 
       - name: Publish the rolling release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: latest-main
           name: Latest main build

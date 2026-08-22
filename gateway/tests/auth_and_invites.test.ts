@@ -438,3 +438,102 @@ describe('Gateway Fetch Handler Hardening', () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe('Gateway Admin API', () => {
+  const ctx = {} as ExecutionContext;
+
+  function sqliteAdminEnv(secret?: string): Env {
+    const db = new DatabaseSync(':memory:');
+    db.exec(
+      'CREATE TABLE rate_limits (key TEXT PRIMARY KEY, window_start INTEGER NOT NULL, count INTEGER NOT NULL);'
+    );
+    db.exec(
+      'CREATE TABLE invites (code_hash TEXT PRIMARY KEY, created_at INTEGER, max_devices INTEGER, redeemed_count INTEGER DEFAULT 0, is_revoked INTEGER DEFAULT 0);'
+    );
+    db.exec(
+      'CREATE TABLE devices (token_hash TEXT PRIMARY KEY, invite_code_hash TEXT, created_at INTEGER, last_used_at INTEGER, is_revoked INTEGER DEFAULT 0, request_count INTEGER DEFAULT 0);'
+    );
+    const DB: any = {
+      prepare(sql: string) {
+        const st = db.prepare(sql);
+        const make = (v: unknown[]) => ({
+          async first<T>() { return (st.get(...(v as any[])) as T) ?? null; },
+          async all<T>() { return { results: st.all(...(v as any[])) as T[] }; },
+          async run() { const i = st.run(...(v as any[])); return { success: true, meta: { changes: Number(i.changes) } }; },
+        });
+        return { bind: (...v: unknown[]) => make(v), ...make([]) };
+      },
+    };
+    return { DB, OPENSUBTITLES_COORDINATOR: {} as any, ADMIN_SECRET: secret };
+  }
+
+  const admin = (secret: string) => ({ Authorization: 'Bearer ' + secret });
+
+  it('serves the admin page without a secret', async () => {
+    const res = await worker.fetch(new Request('https://gateway/v1/admin'), sqliteAdminEnv('s3cret'), ctx);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toContain('text/html');
+    expect(await res.text()).toContain('FLIX GATEWAY ADMIN');
+  });
+
+  it('refuses admin API without the secret', async () => {
+    const res = await worker.fetch(new Request('https://gateway/v1/admin/invites'), sqliteAdminEnv('s3cret'), ctx);
+    expect(res.status).toBe(401);
+  });
+
+  it('refuses admin API with a wrong secret', async () => {
+    const res = await worker.fetch(
+      new Request('https://gateway/v1/admin/invites', { headers: admin('wrong') }),
+      sqliteAdminEnv('s3cret'),
+      ctx
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 503 when the admin secret is not configured', async () => {
+    const res = await worker.fetch(
+      new Request('https://gateway/v1/admin/invites', { headers: admin('anything') }),
+      sqliteAdminEnv(undefined),
+      ctx
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('creates, lists, and revokes an invite with the secret', async () => {
+    const env = sqliteAdminEnv('s3cret');
+    const created = await worker.fetch(
+      new Request('https://gateway/v1/admin/invites', {
+        method: 'POST',
+        headers: { ...admin('s3cret'), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_devices: 2 }),
+      }),
+      env,
+      ctx
+    );
+    expect(created.status).toBe(200);
+    const body: any = await created.json();
+    expect(body.code).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.max_devices).toBe(2);
+
+    const listed = await worker.fetch(
+      new Request('https://gateway/v1/admin/invites', { headers: admin('s3cret') }),
+      env,
+      ctx
+    );
+    const list: any = await listed.json();
+    expect(list.invites.length).toBe(1);
+    const hash = list.invites[0].hash;
+
+    const revoked = await worker.fetch(
+      new Request('https://gateway/v1/admin/invites/revoke', {
+        method: 'POST',
+        headers: { ...admin('s3cret'), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hash_prefix: hash }),
+      }),
+      env,
+      ctx
+    );
+    const rev: any = await revoked.json();
+    expect(rev.revoked).toBe(1);
+  });
+});

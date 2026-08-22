@@ -5,6 +5,9 @@ export interface Env {
   OPENSUBTITLES_USER_AGENT?: string;
   OPENSUBTITLES_USERNAME?: string;
   OPENSUBTITLES_PASSWORD?: string;
+  // Bearer secret that guards the admin routes. When unset, the admin API is
+  // disabled and every admin request is refused.
+  ADMIN_SECRET?: string;
 }
 
 export interface InviteRecord {

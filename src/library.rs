@@ -55,6 +55,23 @@ pub struct Entry {
     pub added_at: SystemTime,
     pub last_played: Option<SystemTime>,
     pub meta: Option<FilmMeta>,
+    /// Top-level file or folder name the torrent writes under the download
+    /// directory. Used to delete the download's data when the entry is removed.
+    /// Absent on entries written by an older build.
+    #[serde(default)]
+    pub output_name: Option<String>,
+}
+
+/// Returns the top-level file or folder name that a torrent's files sit under,
+/// derived from the first file's relative path.
+pub fn output_name_from_files(files: &[crate::session::TorrentFile]) -> Option<String> {
+    files.first().map(|file| {
+        file.name
+            .split('/')
+            .next()
+            .unwrap_or(&file.name)
+            .to_string()
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +136,15 @@ impl Library {
         {
             entry.last_played = Some(SystemTime::now());
         }
+    }
+
+    /// Removes the entry with this info hash and returns it, or None if absent.
+    pub fn remove(&mut self, info_hash: &str) -> Option<Entry> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.info_hash == info_hash)?;
+        Some(self.entries.remove(index))
     }
 
     pub fn entries(&self) -> &[Entry] {

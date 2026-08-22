@@ -32,6 +32,7 @@ impl App {
                 added_at: SystemTime::now(),
                 last_played: None,
                 meta: Some(crate::meta::lookup(&input).await),
+                output_name: crate::library::output_name_from_files(&files),
             };
             let mut stored = library.lock().await;
             stored.upsert(entry);

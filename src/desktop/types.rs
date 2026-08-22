@@ -167,6 +167,9 @@ pub enum DownloadsAction {
         magnet: String,
         file_index: Option<usize>,
     },
+    Remove {
+        info_hash: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

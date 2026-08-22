@@ -126,24 +126,49 @@ pub async fn handle_downloads(
                 added_at: std::time::SystemTime::now(),
                 last_played: None,
                 meta: Some(metadata),
+                output_name: crate::library::output_name_from_files(&files),
             };
             let mut lib = library;
             lib.upsert(entry);
             lib.save()?;
-            let entries = lib
-                .entries()
-                .iter()
-                .map(|entry| DownloadEntrySummary {
-                    info_hash: entry.info_hash.clone(),
-                    display_name: entry.display_name.clone(),
-                    title: entry.meta.as_ref().map(|meta| meta.title.clone()),
-                    year: entry.meta.as_ref().and_then(|meta| meta.year),
-                    file_size: None,
-                })
-                .collect();
+            let entries = summarize(&lib);
             Ok(DownloadsResponse { entries })
         }
+        DownloadsAction::Remove { info_hash } => {
+            let mut lib = library;
+            if let Some(entry) = lib.remove(info_hash) {
+                // Delete the download's data from disk. The output name is the
+                // top-level file or folder the torrent wrote under the download
+                // directory. Older entries have none, so only the record goes.
+                if let Some(name) = entry.output_name.as_ref() {
+                    let target = config.download_dir.join(name);
+                    if target.is_dir() {
+                        let _ = std::fs::remove_dir_all(&target);
+                    } else if target.exists() {
+                        let _ = std::fs::remove_file(&target);
+                    }
+                }
+                lib.save()?;
+            }
+            Ok(DownloadsResponse {
+                entries: summarize(&lib),
+            })
+        }
     }
+}
+
+fn summarize(library: &Library) -> Vec<DownloadEntrySummary> {
+    library
+        .entries()
+        .iter()
+        .map(|entry| DownloadEntrySummary {
+            info_hash: entry.info_hash.clone(),
+            display_name: entry.display_name.clone(),
+            title: entry.meta.as_ref().map(|meta| meta.title.clone()),
+            year: entry.meta.as_ref().and_then(|meta| meta.year),
+            file_size: None,
+        })
+        .collect()
 }
 
 pub fn handle_settings(config: &Config, command: &SettingsCommand) -> Result<SettingsResponse> {

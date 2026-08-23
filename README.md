@@ -10,7 +10,7 @@ Flix has three parts:
 
 - The Rust CLI and TUI in `src/`.
 - The desktop web application in `web/`. Svelte and TypeScript supply the interface. The `flix-desktop` binary serves it on `127.0.0.1`. Search, episode selection, stream picking, and playback all work through the browser.
-- The optional Cloudflare Workers gateway in `gateway/`. It supplies shared invite, device, and subtitle services. The gateway is not deployed.
+- The optional Cloudflare Workers gateway in `gateway/`. It supplies shared invite, device, and subtitle services. The maintainer runs one instance; you can deploy your own.
 
 ## Requirements
 
@@ -80,7 +80,7 @@ A locally built binary does not show this message, because only files downloaded
 
 ## Gateway
 
-The Cloudflare Workers gateway is in `gateway/`. It is not deployed, and no gateway URL exists. Flix works in local mode without it.
+The Cloudflare Workers gateway is in `gateway/`. The maintainer runs an instance that needs an invite code. Flix works in local mode without a gateway, so deploy your own from this directory if you want shared subtitle services.
 
 ```sh
 npm --prefix gateway install
@@ -297,3 +297,13 @@ Flix stops the local server, player, IPC monitor, torrent tasks, and pending wor
 - Stremio search depends on external catalog and torrent stream add-ons.
 - Letterboxd is an optional public-page integration. Its page format can change.
 - The first release build can take several minutes because librqbit has a large dependency tree.
+
+## License
+
+Flix is released under the [MIT License](LICENSE).
+
+The default gateway URL `https://gateway.babalola.dev` points at the maintainer's
+private subtitle gateway, which needs an invite code. If you build Flix yourself,
+deploy your own gateway from the `gateway/` directory, or set `FLIX_GATEWAY_URL`
+to your own instance. The torrent, playback, search, and TUI features work
+without any gateway.

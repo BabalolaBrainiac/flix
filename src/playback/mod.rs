@@ -1,5 +1,7 @@
+pub mod anime;
 pub mod coordinator;
 pub mod language;
+mod preparation;
 pub mod types;
 
 pub use coordinator::*;
@@ -21,6 +23,7 @@ pub struct InteractivePlaybackPreparation {
     pub cached_subtitles: Vec<PathBuf>,
     pub subtitle_results: Vec<subtitles::SubtitleResult>,
     pub notes: Vec<String>,
+    pub stream_ready: bool,
 }
 
 pub async fn prepare_interactive(
@@ -56,9 +59,13 @@ pub async fn prepare_interactive(
     let (warmup_result, subtitle_result, stremio_result) =
         tokio::join!(warmup, subtitle, stremio_subtitle);
     let mut notes = Vec::new();
-    if let Err(error) = warmup_result {
-        notes.push(format!("Stream warm-up was incomplete: {error}"));
-    }
+    let stream_ready = match warmup_result {
+        Ok(_) => true,
+        Err(error) => {
+            notes.push(format!("Stream warm-up was incomplete: {error}"));
+            false
+        }
+    };
     let (open_subtitles_cache, subtitle_results) = match subtitle_result {
         Ok(options) => {
             if options.cached.is_empty()
@@ -92,6 +99,7 @@ pub async fn prepare_interactive(
         cached_subtitles,
         subtitle_results,
         notes,
+        stream_ready,
     }
 }
 

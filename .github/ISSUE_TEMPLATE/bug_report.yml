@@ -1,0 +1,25 @@
+name: Report a problem
+description: Report a playback problem or another fault.
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Flix version and operating system
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce the problem
+      description: Describe what you did and what happened.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Debug report
+      description: Export a debug report from Diagnostics. Check it before attaching it. Do not include credentials or private source links.

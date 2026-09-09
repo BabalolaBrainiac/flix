@@ -27,6 +27,7 @@ fn serializes_and_deserializes_desktop_commands() {
     assert_eq!(episodes, parsed);
 
     let streams = StreamsCommand {
+        is_anime: false,
         media_type: Some("series".to_string()),
         stream_id: "tt10161886:1:1".to_string(),
     };
@@ -105,6 +106,9 @@ fn converts_catalog_items_and_episodes_to_desktop_summaries() {
         name: "Test Title".to_string(),
         release_info: Some("2024".to_string()),
         poster: None,
+        genres: None,
+        imdb_rating: None,
+        description: None,
         kind: CatalogKind::Cinemeta,
     };
     let summary = CatalogItemSummary::from(&item);

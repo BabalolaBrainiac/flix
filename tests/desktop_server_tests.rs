@@ -104,6 +104,51 @@ async fn serves_embedded_static_assets_and_spa_fallback() {
 }
 
 #[tokio::test]
+async fn recommend_endpoint_requires_auth() {
+    let temp = TempDir::new().unwrap();
+    let config = Config {
+        download_dir: temp.path().join("downloads"),
+        data_dir: temp.path().join("data"),
+    };
+    let service = DesktopService::new(config);
+    let server = DesktopServer::bind(service).await.unwrap();
+    let port = server.state.port;
+    let token = server.state.token.clone();
+
+    tokio::spawn(async move {
+        let _ = server.run().await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/api/recommend", port);
+
+    // 1. No token → 401
+    let res = client
+        .post(&url)
+        .json(&serde_json::json!({"keywords": "action", "limit": 5}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+    // 2. Valid token → 200 or 500 (500 is fine if no network)
+    let res = client
+        .post(&url)
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({"keywords": "action", "limit": 5}))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status();
+    assert!(
+        status == StatusCode::OK || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "Expected 200 or 500, got {status}",
+    );
+}
+
+#[tokio::test]
 async fn quit_endpoint_signals_graceful_shutdown() {
     let temp = TempDir::new().unwrap();
     let config = Config {
@@ -122,6 +167,13 @@ async fn quit_endpoint_signals_graceful_shutdown() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let client = reqwest::Client::new();
+    let events = client
+        .get(format!("http://127.0.0.1:{port}/api/events"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(events.status(), StatusCode::OK);
     let quit_url = format!("http://127.0.0.1:{}/api/quit", port);
 
     let res = client

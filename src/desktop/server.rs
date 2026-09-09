@@ -1,8 +1,9 @@
 use crate::desktop::service::DesktopService;
 use crate::desktop::types::{
     DownloadsAction, DownloadsCommand, EpisodesCommand, NextEpisodeCommand, PlayCommand,
-    RedeemInviteCommand, SearchCommand, SettingsAction, SettingsCommand, StopPlaybackCommand,
-    StreamsCommand,
+    ReaderChaptersCommand, ReaderPagesCommand, ReaderProgressSaveCommand, ReaderSearchCommand,
+    RecommendCommand, RedeemInviteCommand, SearchCommand, SettingsAction, SettingsCommand,
+    StopPlaybackCommand, StreamsCommand,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -96,10 +97,12 @@ impl DesktopServer {
     pub async fn run(self) -> Result<()> {
         let app = create_router(self.state.clone());
         let mut shutdown_rx = self.state.shutdown_tx.subscribe();
+        let coordinator = self.state.service.coordinator();
 
         axum::serve(self.listener, app)
             .with_graceful_shutdown(async move {
                 let _ = shutdown_rx.recv().await;
+                let _ = coordinator.stop().await;
             })
             .await
             .context("Desktop HTTP server encountered an error")?;
@@ -118,7 +121,9 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/activation/reset", post(handle_reset_activation))
         .route("/api/vlc-guidance", get(handle_get_vlc_guidance))
         .route("/api/diagnostics", get(handle_get_diagnostics))
+        .route("/api/diagnostics/export", get(handle_export_diagnostics))
         .route("/api/search", post(handle_search))
+        .route("/api/recommend", post(handle_recommend))
         .route("/api/episodes", post(handle_episodes))
         .route("/api/streams", post(handle_streams))
         .route("/api/play", post(handle_play))
@@ -129,6 +134,14 @@ pub fn create_router(state: ServerState) -> Router {
             get(handle_get_downloads).post(handle_post_downloads),
         )
         .route("/api/settings", get(handle_get_settings))
+        .route("/api/reader/search", post(handle_reader_search))
+        .route("/api/reader/chapters", post(handle_reader_chapters))
+        .route("/api/reader/pages", post(handle_reader_pages))
+        .route("/api/reader/page", get(handle_reader_page))
+        .route(
+            "/api/reader/progress",
+            get(handle_reader_progress_get).post(handle_reader_progress_save),
+        )
         .route("/api/quit", post(handle_quit))
         .fallback(handle_static_or_spa)
         .with_state(state)
@@ -195,6 +208,23 @@ fn api_error(status: StatusCode, code: &str, message: &str, retryable: bool) -> 
     (status, Json(body)).into_response()
 }
 
+async fn handle_export_diagnostics(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, StatusCode> {
+    validate_origin_and_token(&headers, &state)?;
+    Ok((
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=flix-debug-report.json",
+            ),
+        ],
+        Json(state.service.coordinator().debug_report()),
+    ))
+}
+
 async fn handle_health(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -217,21 +247,30 @@ async fn handle_events(
     let rx = { state.service.coordinator().subscribe() };
 
     let initial = rx.borrow().clone();
-    let stream = stream::unfold((rx, Some(initial)), |(mut rx, initial)| async move {
-        if let Some(first) = initial {
-            let data = serde_json::to_string(&first).unwrap_or_default();
-            let event = Event::default().data(data);
-            return Some((Ok(event), (rx, None)));
-        }
-        if rx.changed().await.is_ok() {
-            let val = rx.borrow().clone();
-            let data = serde_json::to_string(&val).unwrap_or_default();
-            let event = Event::default().data(data);
-            Some((Ok(event), (rx, None)))
-        } else {
-            None
-        }
-    });
+    let shutdown = state.shutdown_tx.subscribe();
+    let stream = stream::unfold(
+        (rx, Some(initial), shutdown),
+        |(mut rx, initial, mut shutdown)| async move {
+            if let Some(first) = initial {
+                let data = serde_json::to_string(&first).unwrap_or_default();
+                let event = Event::default().data(data);
+                return Some((Ok(event), (rx, None, shutdown)));
+            }
+            let changed = tokio::select! {
+                biased;
+                _ = shutdown.recv() => return None,
+                changed = rx.changed() => changed,
+            };
+            if changed.is_ok() {
+                let val = rx.borrow().clone();
+                let data = serde_json::to_string(&val).unwrap_or_default();
+                let event = Event::default().data(data);
+                Some((Ok(event), (rx, None, shutdown)))
+            } else {
+                None
+            }
+        },
+    );
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
@@ -295,6 +334,25 @@ async fn handle_search(
             StatusCode::INTERNAL_SERVER_ERROR,
             "SEARCH_ERROR",
             "Failed to perform search query",
+            true,
+        )
+    })?;
+    Ok(Json(res))
+}
+
+async fn handle_recommend(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<RecommendCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.recommend(&command).await.map_err(|e| {
+        tracing::error!("recommend error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "RECOMMEND_ERROR",
+            "Failed to get recommendations",
             true,
         )
     })?;
@@ -538,6 +596,138 @@ async fn handle_reset_activation(
             StatusCode::INTERNAL_SERVER_ERROR,
             "ACTIVATION_RESET_ERROR",
             "Device activation reset failed",
+            false,
+        )
+    })?;
+    Ok(Json(json!({ "success": true })))
+}
+
+async fn handle_reader_search(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<ReaderSearchCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.reader_search(&command).await.map_err(|e| {
+        tracing::error!("reader search error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "READER_SEARCH_ERROR",
+            "Failed to search manga",
+            true,
+        )
+    })?;
+    Ok(Json(res))
+}
+
+async fn handle_reader_chapters(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<ReaderChaptersCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.reader_chapters(&command).await.map_err(|e| {
+        tracing::error!("reader chapters error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "READER_CHAPTERS_ERROR",
+            "Failed to retrieve chapters",
+            true,
+        )
+    })?;
+    Ok(Json(res))
+}
+
+async fn handle_reader_pages(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<ReaderPagesCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.reader_pages(&command).await.map_err(|e| {
+        tracing::error!("reader pages error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "READER_PAGES_ERROR",
+            "Failed to retrieve pages",
+            true,
+        )
+    })?;
+    Ok(Json(res))
+}
+
+async fn handle_reader_page(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+
+    let chapter_id = params.get("chapter_id").cloned().unwrap_or_default();
+    let manga_id = params.get("manga_id").cloned().unwrap_or_default();
+    let index: usize = params
+        .get("index")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let (data, mime) = state
+        .service
+        .reader_page_download(&chapter_id, &manga_id, index)
+        .await
+        .map_err(|e| {
+            tracing::error!("reader page error: {:#}", e);
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "READER_PAGE_ERROR",
+                "Failed to load page",
+                true,
+            )
+        })?;
+
+    Ok(([(header::CONTENT_TYPE, mime)], data))
+}
+
+async fn handle_reader_progress_get(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+
+    let publication_id = params.get("publication_id").cloned().unwrap_or_default();
+    let res = state
+        .service
+        .reader_progress_get(&publication_id)
+        .map_err(|e| {
+            tracing::error!("reader progress get error: {:#}", e);
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "READER_PROGRESS_ERROR",
+                "Failed to get reading progress",
+                false,
+            )
+        })?;
+    Ok(Json(res))
+}
+
+async fn handle_reader_progress_save(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<ReaderProgressSaveCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state.service.reader_progress_save(&command).map_err(|e| {
+        tracing::error!("reader progress save error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "READER_PROGRESS_ERROR",
+            "Failed to save reading progress",
             false,
         )
     })?;

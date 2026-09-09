@@ -1,6 +1,8 @@
 import type { Env } from './types';
 import { handleRedeemInvite, handleDeviceStatus } from './routes/invites';
 import { handleSubtitlesResolve } from './routes/subtitles';
+import { handleCatalogSearch, handleCatalogTitle, handleCatalogDiscover } from './routes/catalog';
+import { handleReaderSearch, handleReaderChapters } from './routes/reader';
 import {
   requireAdmin,
   adminPageHtml,
@@ -76,6 +78,26 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   if (url.pathname === '/v1/subtitles/resolve' && request.method === 'POST') {
     return await handleSubtitlesResolve(request, env);
+  }
+
+  if (url.pathname === '/v1/catalog/search' && request.method === 'GET') {
+    return await handleCatalogSearch(request, env);
+  }
+
+  if (url.pathname === '/v1/catalog/title' && request.method === 'GET') {
+    return await handleCatalogTitle(request, env);
+  }
+
+  if (url.pathname === '/v1/catalog/discover' && request.method === 'GET') {
+    return await handleCatalogDiscover(request, env);
+  }
+
+  if (url.pathname === '/v1/reader/search' && request.method === 'GET') {
+    return await handleReaderSearch(request, env);
+  }
+
+  if (url.pathname === '/v1/reader/chapters' && request.method === 'GET') {
+    return await handleReaderChapters(request, env);
   }
 
   // Admin page. The HTML carries no secret; the page asks for it and sends it

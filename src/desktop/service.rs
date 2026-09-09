@@ -3,8 +3,11 @@ use crate::desktop::commands;
 use crate::desktop::types::{
     ActivationStatus, DownloadsCommand, DownloadsResponse, EpisodesCommand, EpisodesResponse,
     NextEpisodeCommand, NextEpisodeResponse, PlayCommand, PlaybackStatusResponse,
-    RedeemInviteCommand, RedeemInviteResponse, SearchCommand, SearchResponse, SettingsCommand,
-    SettingsResponse, StopPlaybackCommand, StopPlaybackResponse, StreamsCommand, StreamsResponse,
+    ReaderChaptersCommand, ReaderChaptersResponse, ReaderPagesCommand, ReaderPagesResponse,
+    ReaderProgressResponse, ReaderProgressSaveCommand, ReaderSearchCommand, ReaderSearchResponse,
+    RecommendCommand, RecommendResponse, RedeemInviteCommand, RedeemInviteResponse, SearchCommand,
+    SearchResponse, SettingsCommand, SettingsResponse, StopPlaybackCommand, StopPlaybackResponse,
+    StreamsCommand, StreamsResponse,
 };
 use crate::playback::{
     AlternativeSource, MediaRef, OperationAccepted, PlaybackCoordinator, ResolvedSource,
@@ -43,6 +46,11 @@ impl DesktopService {
     pub async fn search(&self, command: &SearchCommand) -> Result<SearchResponse> {
         let client = self.get_stremio_client()?;
         commands::handle_search(client, command).await
+    }
+
+    pub async fn recommend(&self, command: &RecommendCommand) -> Result<RecommendResponse> {
+        let client = self.get_stremio_client()?;
+        commands::handle_recommend(client, command).await
     }
 
     pub async fn episodes(&self, command: &EpisodesCommand) -> Result<EpisodesResponse> {
@@ -112,6 +120,11 @@ impl DesktopService {
                 })
                 .collect();
             ResolvedSource {
+                is_anime: command.media_ref.as_ref().is_some_and(MediaRef::is_anime)
+                    || command
+                        .queue_seed
+                        .as_ref()
+                        .is_some_and(|seed| seed.catalog_item.is_anime),
                 magnet: magnet.clone(),
                 file_index: command.file_index,
                 quality: "4K".to_string(),
@@ -166,5 +179,40 @@ impl DesktopService {
     pub async fn stop(&self, _command: StopPlaybackCommand) -> Result<StopPlaybackResponse> {
         self.coordinator.stop().await?;
         Ok(StopPlaybackResponse { success: true })
+    }
+
+    pub async fn reader_search(
+        &self,
+        command: &ReaderSearchCommand,
+    ) -> Result<ReaderSearchResponse> {
+        commands::handle_reader_search(command).await
+    }
+
+    pub async fn reader_chapters(
+        &self,
+        command: &ReaderChaptersCommand,
+    ) -> Result<ReaderChaptersResponse> {
+        commands::handle_reader_chapters(command).await
+    }
+
+    pub async fn reader_pages(&self, command: &ReaderPagesCommand) -> Result<ReaderPagesResponse> {
+        commands::handle_reader_pages(&self.config, command).await
+    }
+
+    pub async fn reader_page_download(
+        &self,
+        chapter_id: &str,
+        manga_id: &str,
+        index: usize,
+    ) -> Result<(Vec<u8>, String)> {
+        commands::handle_reader_page_download(&self.config, chapter_id, manga_id, index).await
+    }
+
+    pub fn reader_progress_get(&self, publication_id: &str) -> Result<ReaderProgressResponse> {
+        commands::handle_reader_progress_get(&self.config, publication_id)
+    }
+
+    pub fn reader_progress_save(&self, command: &ReaderProgressSaveCommand) -> Result<()> {
+        commands::handle_reader_progress_save(&self.config, command)
     }
 }

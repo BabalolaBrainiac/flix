@@ -1,6 +1,7 @@
 use flix::stremio::{
-    automatic_1080p_fallback, automatic_playback_candidates, build_magnet, parse_catalog_response,
-    parse_meta_response, parse_stream_response, parse_subtitle_response, CatalogKind,
+    automatic_1080p_fallback, automatic_playback_candidates, build_magnet, catalog_url,
+    parse_catalog_response, parse_meta_response, parse_stream_response, parse_subtitle_response,
+    CatalogKind,
 };
 use serde_json::json;
 
@@ -272,4 +273,94 @@ fn maps_episode_stream_requests_to_series() {
     let kitsu_ep_id = "kitsu:42:1";
     assert!(imdb_ep_id.contains(':'));
     assert!(kitsu_ep_id.starts_with("kitsu:"));
+}
+
+#[test]
+fn parses_catalog_items_with_genres_and_rating() {
+    let value = json!({
+        "metas": [
+            {
+                "id": "tt1234567",
+                "type": "series",
+                "name": "A Great Show",
+                "releaseInfo": "2025",
+                "genres": ["Action", "Mystery"],
+                "imdbRating": "8.5",
+                "description": "A great show"
+            }
+        ]
+    });
+
+    let items = parse_catalog_response(value, CatalogKind::Cinemeta).expect("catalog");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].genres,
+        Some(vec!["Action".to_string(), "Mystery".to_string()])
+    );
+    assert_eq!(items[0].imdb_rating.as_deref(), Some("8.5"));
+    assert_eq!(items[0].description.as_deref(), Some("A great show"));
+}
+
+#[test]
+fn parses_catalog_items_without_optional_fields() {
+    let value = json!({
+        "metas": [
+            {
+                "id": "tt1234567",
+                "type": "movie",
+                "name": "A Movie",
+                "releaseInfo": "2026"
+            }
+        ]
+    });
+
+    let items = parse_catalog_response(value, CatalogKind::Cinemeta).expect("catalog");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].genres, None);
+    assert_eq!(items[0].imdb_rating, None);
+    assert_eq!(items[0].description, None);
+}
+
+#[test]
+fn catalog_url_builds_valid_genre_path() {
+    let base = reqwest::Url::parse("https://v3-cinemeta.strem.io/").expect("base URL");
+
+    let url = catalog_url(&base, "series", "top", "genre=Mystery").expect("catalog URL");
+
+    assert!(url
+        .path()
+        .ends_with("/catalog/series/top/genre=Mystery.json"));
+}
+
+#[test]
+fn catalog_url_builds_paginated_path() {
+    let base = reqwest::Url::parse("https://v3-cinemeta.strem.io/").expect("base URL");
+
+    let url = catalog_url(&base, "series", "top", "genre=Action&skip=100").expect("catalog URL");
+
+    assert!(url.path().contains("genre=Action"));
+    assert!(url.path().contains("skip=100"));
+}
+
+#[test]
+fn catalog_url_rejects_invalid_catalog_id() {
+    let base = reqwest::Url::parse("https://v3-cinemeta.strem.io/").expect("base URL");
+
+    assert!(catalog_url(&base, "series", "bad id!", "genre=Action").is_err());
+}
+
+#[test]
+fn catalog_url_rejects_invalid_media_type() {
+    let base = reqwest::Url::parse("https://v3-cinemeta.strem.io/").expect("base URL");
+
+    assert!(catalog_url(&base, "podcast", "top", "genre=Action").is_err());
+}
+
+#[test]
+fn catalog_url_rejects_invalid_extra() {
+    let base = reqwest::Url::parse("https://v3-cinemeta.strem.io/").expect("base URL");
+
+    assert!(catalog_url(&base, "series", "top", "genre=<script>").is_err());
 }

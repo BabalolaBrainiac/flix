@@ -3,6 +3,7 @@ use anyhow::{anyhow, Result};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 pub mod detect;
 pub mod install;
@@ -47,6 +48,7 @@ pub struct Player {
 }
 
 pub struct PlaybackOptions {
+    pub selected_tracks: Option<crate::playback::anime::SelectedTracks>,
     pub title: String,
     /// Subtitle files to attach, most preferred first. Every file becomes a
     /// selectable subtitle track in the player.
@@ -65,6 +67,7 @@ impl PlaybackOptions {
     pub fn new(title: String, file_length: u64) -> Self {
         let language_policy = LanguagePolicy::standard();
         Self {
+            selected_tracks: None,
             title,
             subtitle_files: Vec::new(),
             audio_languages: language_policy.audio_languages,
@@ -92,6 +95,17 @@ impl PlaybackOptions {
 
     pub fn with_subtitles(mut self, subtitle_files: Vec<String>) -> Self {
         self.subtitle_files = subtitle_files;
+        self
+    }
+
+    pub fn with_selected_tracks(
+        mut self,
+        tracks: Option<crate::playback::anime::SelectedTracks>,
+    ) -> Self {
+        if tracks.is_some() {
+            self = self.with_language_policy(LanguagePolicy::anime());
+        }
+        self.selected_tracks = tracks;
         self
     }
 
@@ -133,11 +147,72 @@ fn default_languages() -> Vec<String> {
 
 pub struct ManagedPlayer {
     child: Option<Child>,
+    started: Instant,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct PlayerExit {
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub runtime_ms: u64,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("The player closed during startup")]
+pub struct PlayerStartupError(pub PlayerExit);
+
+const STARTUP_CHECK: Duration = Duration::from_millis(500);
+
+impl PlayerKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mpv => "mpv",
+            Self::Vlc => "VLC",
+        }
+    }
 }
 
 impl ManagedPlayer {
     pub fn new(child: Child) -> Self {
-        Self { child: Some(child) }
+        Self {
+            child: Some(child),
+            started: Instant::now(),
+        }
+    }
+
+    pub fn poll_exit(&mut self) -> Result<Option<PlayerExit>> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(None);
+        };
+        Ok(child.try_wait()?.map(|status| {
+            #[cfg(unix)]
+            let signal = {
+                use std::os::unix::process::ExitStatusExt;
+                status.signal()
+            };
+            #[cfg(not(unix))]
+            let signal = None;
+            PlayerExit {
+                success: status.success(),
+                exit_code: status.code(),
+                signal,
+                runtime_ms: self.started.elapsed().as_millis() as u64,
+            }
+        }))
+    }
+
+    /// Detects immediate process failures. This does not confirm video decoding.
+    pub async fn wait_for_startup(&mut self) -> Result<()> {
+        loop {
+            if let Some(exit) = self.poll_exit()? {
+                return Err(PlayerStartupError(exit).into());
+            }
+            if self.started.elapsed() >= STARTUP_CHECK {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     pub fn has_exited(&mut self) -> Result<bool> {
@@ -205,6 +280,13 @@ pub fn command(p: &Player, url: &str, opts: &PlaybackOptions) -> Command {
                 cmd.arg(format!("--slang={subtitle_languages}"));
             }
             cmd.arg("--subs-fallback=no");
+            if let Some(tracks) = &opts.selected_tracks {
+                cmd.arg(format!("--aid={}", tracks.audio + 1));
+                if let Some(subtitle) = tracks.subtitle {
+                    cmd.arg(format!("--sid={}", subtitle + 1));
+                }
+                cmd.arg("--subs-fallback-forced=no");
+            }
 
             // mpv accepts one `--sub-file` for each extra subtitle track.
             for subtitle in &opts.subtitle_files {
@@ -215,6 +297,13 @@ pub fn command(p: &Player, url: &str, opts: &PlaybackOptions) -> Command {
             }
         }
         PlayerKind::Vlc => {
+            // macOS VLC does not support these options. Direct launches create separate processes.
+            #[cfg(not(target_os = "macos"))]
+            {
+                cmd.arg("--no-one-instance");
+                cmd.arg("--no-one-instance-when-started-from-file");
+            }
+            cmd.arg("--play-and-exit");
             cmd.arg(url);
             cmd.arg(format!("--meta-title={}", opts.title));
             if opts.file_length >= LARGE_FILE_THRESHOLD {
@@ -228,6 +317,12 @@ pub fn command(p: &Player, url: &str, opts: &PlaybackOptions) -> Command {
             }
             if !subtitle_languages.is_empty() {
                 cmd.arg(format!("--sub-language={subtitle_languages}"));
+            }
+            if let Some(tracks) = &opts.selected_tracks {
+                cmd.arg(format!("--audio-track={}", tracks.audio));
+                if let Some(subtitle) = tracks.subtitle {
+                    cmd.arg(format!("--sub-track={subtitle}"));
+                }
             }
 
             // VLC reads one `--sub-file`. Flix attaches every other subtitle as

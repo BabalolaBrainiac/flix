@@ -35,6 +35,10 @@ percent-encoding = "2"
 rust-embed = { version = "8.5", features = ["mime-guess"] }
 mime_guess = "2.0"
 keyring = { version = "3.6.1", features = ["apple-native", "windows-native"] }
+zip = { version = "2", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 default = []

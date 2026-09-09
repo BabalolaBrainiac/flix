@@ -2,11 +2,18 @@ use crate::config::Config;
 use crate::desktop::types::{
     ActivationStatus, CatalogItemSummary, DownloadEntrySummary, DownloadsAction, DownloadsCommand,
     DownloadsResponse, EpisodeSummary, EpisodesCommand, EpisodesResponse, PlayerSummary,
-    RedeemInviteCommand, RedeemInviteResponse, SearchCommand, SearchResponse, SettingsAction,
-    SettingsCommand, SettingsResponse, StreamSummary, StreamsCommand, StreamsResponse,
+    ReaderChaptersCommand, ReaderChaptersResponse, ReaderPagesCommand, ReaderPagesResponse,
+    ReaderProgressResponse, ReaderProgressSaveCommand, ReaderSearchCommand, ReaderSearchResponse,
+    RecommendCommand, RecommendItemSummary, RecommendResponse, RedeemInviteCommand,
+    RedeemInviteResponse, SearchCommand, SearchResponse, SettingsAction, SettingsCommand,
+    SettingsResponse, StreamSummary, StreamsCommand, StreamsResponse,
 };
 use crate::library::Library;
 use crate::player;
+use crate::reader::cache::PageCache;
+use crate::reader::progress::{ProgressStore, ReadingPosition};
+use crate::reader::source::ReaderClient;
+use crate::reader::ReaderSource;
 use crate::stremio::{
     automatic_playback_candidates, stream_quality_label, CatalogItem, CatalogKind, StremioClient,
 };
@@ -28,6 +35,121 @@ pub async fn handle_search(
     })
 }
 
+pub async fn handle_recommend(
+    client: &StremioClient,
+    command: &RecommendCommand,
+) -> Result<RecommendResponse> {
+    use crate::recommend;
+
+    let resolved = recommend::resolve_keywords(&command.keywords);
+
+    let search_all = !command.show && !command.movie && !command.anime;
+    let mut all_items = Vec::new();
+
+    // Fetch Cinemeta catalogs
+    if search_all || command.movie || command.show {
+        let types: Vec<&str> = if search_all {
+            vec!["movie", "series"]
+        } else {
+            let mut t = Vec::new();
+            if command.movie {
+                t.push("movie");
+            }
+            if command.show {
+                t.push("series");
+            }
+            t
+        };
+
+        for media_type in types {
+            for genre in &resolved.genres {
+                let extra = format!("genre={genre}");
+                if let Ok(items) = client
+                    .discover(media_type, "top", &extra, CatalogKind::Cinemeta)
+                    .await
+                {
+                    all_items.extend(items);
+                }
+            }
+            if resolved.genres.is_empty() {
+                if let Ok(items) = client
+                    .discover(media_type, "top", "genre=Action", CatalogKind::Cinemeta)
+                    .await
+                {
+                    all_items.extend(items);
+                }
+            }
+        }
+    }
+
+    // Fetch anime
+    if search_all || command.anime {
+        match recommend::anime_catalog_for_genres(&resolved.genres) {
+            recommend::AnimeCatalogStrategy::GenreFiltered { catalog_id, genre } => {
+                let extra = format!("genre={genre}");
+                if let Ok(items) = client
+                    .discover("anime", &catalog_id, &extra, CatalogKind::AnimeKitsu)
+                    .await
+                {
+                    all_items.extend(items);
+                }
+            }
+            recommend::AnimeCatalogStrategy::TrendingWithLocalFilter => {
+                if let Ok(items) = client
+                    .discover(
+                        "anime",
+                        "kitsu-anime-trending",
+                        "genre=Action",
+                        CatalogKind::AnimeKitsu,
+                    )
+                    .await
+                {
+                    all_items.extend(items);
+                }
+            }
+            recommend::AnimeCatalogStrategy::Popular => {
+                if let Ok(items) = client
+                    .discover(
+                        "anime",
+                        "kitsu-anime-popular",
+                        "genre=Action",
+                        CatalogKind::AnimeKitsu,
+                    )
+                    .await
+                {
+                    all_items.extend(items);
+                }
+            }
+        }
+    }
+
+    let scored = recommend::score_items(all_items, &resolved);
+    let filter = recommend::RecommendFilter {
+        min_rating: command.min_rating,
+        since_year: command.since_year,
+        limit: command.limit,
+    };
+    let filtered = recommend::apply_filter(scored, &filter);
+
+    let items = filtered
+        .into_iter()
+        .map(|scored| RecommendItemSummary {
+            id: scored.item.id,
+            name: scored.item.name,
+            media_type: scored.item.media_type,
+            release_info: scored.item.release_info,
+            poster: scored.item.poster,
+            genres: scored.item.genres,
+            imdb_rating: scored.item.imdb_rating,
+            description: scored.item.description,
+            is_anime: scored.item.kind == CatalogKind::AnimeKitsu,
+            score: scored.score,
+        })
+        .collect();
+
+    Ok(RecommendResponse { items })
+}
+
 pub async fn handle_episodes(
     client: &StremioClient,
     command: &EpisodesCommand,
@@ -47,6 +169,9 @@ pub async fn handle_episodes(
         name: String::new(),
         release_info: None,
         poster: None,
+        genres: None,
+        imdb_rating: None,
+        description: None,
         kind,
     };
     let episodes = client.episodes(&item).await?;
@@ -62,8 +187,13 @@ pub async fn handle_streams(
     command: &StreamsCommand,
 ) -> Result<StreamsResponse> {
     let media_type = command.media_type.as_deref().unwrap_or("series");
-    let streams = client.streams(media_type, &command.stream_id).await?;
-    let registered = coordinator.register_stream_candidates(&streams).await?;
+    let is_anime = command.is_anime || command.stream_id.starts_with("kitsu:");
+    let streams = client
+        .streams_for(media_type, &command.stream_id, is_anime)
+        .await?;
+    let registered = coordinator
+        .register_stream_candidates_for(&streams, is_anime)
+        .await?;
     let recommended_candidates = automatic_playback_candidates(&streams);
     let recommended_first = recommended_candidates.first().copied();
 
@@ -334,4 +464,112 @@ pub fn handle_diagnostics(
         data_dir: config.data_dir.display().to_string(),
         active_session: active_playback,
     })
+}
+
+pub async fn handle_reader_search(command: &ReaderSearchCommand) -> Result<ReaderSearchResponse> {
+    let client = ReaderClient::new(ReaderSource::MangaDex)?;
+    let publications = client.search(&command.query, 20).await?;
+    Ok(ReaderSearchResponse { publications })
+}
+
+pub async fn handle_reader_chapters(
+    command: &ReaderChaptersCommand,
+) -> Result<ReaderChaptersResponse> {
+    let client = ReaderClient::new(ReaderSource::MangaDex)?;
+    let (chapters, available_languages) = client.chapters(&command.manga_id, &command.lang).await?;
+    Ok(ReaderChaptersResponse {
+        chapters,
+        available_languages,
+    })
+}
+
+pub async fn handle_reader_pages(
+    _config: &Config,
+    command: &ReaderPagesCommand,
+) -> Result<ReaderPagesResponse> {
+    let client = ReaderClient::new(ReaderSource::MangaDex)?;
+    let page_set = client.pages(&command.chapter_id).await?;
+    let page_count = page_set.page_urls.len();
+    // Return local proxy URLs instead of external URLs
+    let pages: Vec<String> = (0..page_count)
+        .map(|i| {
+            format!(
+                "/api/reader/page?chapter_id={}&index={i}&manga_id={}",
+                command.chapter_id, command.manga_id
+            )
+        })
+        .collect();
+    Ok(ReaderPagesResponse {
+        chapter_id: command.chapter_id.clone(),
+        page_count,
+        pages,
+    })
+}
+
+pub async fn handle_reader_page_download(
+    config: &Config,
+    chapter_id: &str,
+    manga_id: &str,
+    index: usize,
+) -> Result<(Vec<u8>, String)> {
+    let client = ReaderClient::new(ReaderSource::MangaDex)?;
+    let page_set = client.pages(chapter_id).await?;
+    let url = page_set
+        .page_urls
+        .get(index)
+        .ok_or_else(|| anyhow!("Page index {index} out of range"))?;
+
+    // Check cache first
+    let cache = PageCache::new(&config.data_dir);
+    let source_name = ReaderSource::MangaDex.to_string();
+    let ext = url
+        .rsplit('.')
+        .next()
+        .filter(|e| e.len() <= 5 && e.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or("jpg");
+    let path = cache.page_path(&source_name, manga_id, chapter_id, index + 1, ext);
+
+    if cache.has_page(&path) {
+        let data = std::fs::read(&path)?;
+        let mime = mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .to_string();
+        return Ok((data, mime));
+    }
+
+    // Download and cache
+    let data = client.download_page(url).await?;
+    cache.store_page(&path, &data).await?;
+    let mime = mime_guess::from_path(&path)
+        .first_or_octet_stream()
+        .to_string();
+    Ok((data, mime))
+}
+
+pub fn handle_reader_progress_get(
+    config: &Config,
+    publication_id: &str,
+) -> Result<ReaderProgressResponse> {
+    let store = ProgressStore::load(&config.data_dir)?;
+    Ok(ReaderProgressResponse {
+        position: store.get(publication_id).cloned(),
+    })
+}
+
+pub fn handle_reader_progress_save(
+    config: &Config,
+    command: &ReaderProgressSaveCommand,
+) -> Result<()> {
+    let mut store = ProgressStore::load(&config.data_dir)?;
+    store.set(ReadingPosition {
+        publication_id: command.publication_id.clone(),
+        chapter_id: command.chapter_id.clone(),
+        page: command.page,
+        updated_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string(),
+    });
+    store.save()
 }

@@ -1,7 +1,7 @@
 use crate::cli_playback::{PlaybackSource, SourceCatalog};
 use crate::episode_queue::EpisodeQueue;
 use crate::stremio::{self, CatalogItem, CatalogKind, Episode, StremioClient, TorrentStream};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Write};
 
@@ -57,12 +57,19 @@ pub async fn select(
         println!("No matching movie, series, or anime was found.");
         return Ok(None);
     }
+    select_from_items(&result.items, &client, action_override).await
+}
 
-    let items = &result.items;
+pub async fn select_from_items(
+    items: &[CatalogItem],
+    client: &StremioClient,
+    action_override: Option<SearchAction>,
+) -> Result<Option<SearchSelection>> {
     let mut stage = Stage::Title;
     let mut item_index = 0usize;
     let mut episodes: Vec<Episode> = Vec::new();
     let mut episode_index: Option<usize> = None;
+    let mut active_season: Option<u32> = None;
     let mut streams: Vec<TorrentStream> = Vec::new();
     let mut stream_index = 0usize;
 
@@ -73,6 +80,7 @@ pub async fn select(
                     item_index = index;
                     episodes.clear();
                     episode_index = None;
+                    active_season = None;
                     streams.clear();
                     stage = Stage::Episode;
                 }
@@ -100,7 +108,9 @@ pub async fn select(
                         }
                     }
                 }
-                match choose_episode(&episodes)? {
+                let (choice, season) = choose_episode(&episodes, active_season)?;
+                active_season = season;
+                match choice {
                     Choice::Selected(index) => {
                         episode_index = Some(index);
                         streams.clear();
@@ -122,7 +132,14 @@ pub async fn select(
                         episode_index.map(|index| &episodes[index]),
                     );
                     println!("Searching torrent sources...");
-                    match client.streams(media_type, &stream_id).await {
+                    match client
+                        .streams_for(
+                            media_type,
+                            &stream_id,
+                            items[item_index].kind == CatalogKind::AnimeKitsu,
+                        )
+                        .await
+                    {
                         Ok(found) if found.is_empty() => {
                             eprintln!("No torrent source was found for the selection.");
                             stage = previous;
@@ -186,15 +203,14 @@ fn build_catalog(streams: &[TorrentStream], selected: usize) -> Result<SourceCat
         .take(MAX_LISTED)
         .map(PlaybackSource::from_stream)
         .collect::<Result<Vec<_>>>()?;
-    let fallbacks = if selected == 0 {
-        stremio::automatic_playback_candidates(streams)
-            .into_iter()
-            .skip(1)
-            .map(PlaybackSource::from_stream)
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        Vec::new()
-    };
+    let selected_source = sources
+        .get(selected)
+        .context("The selected source is not available")?;
+    let fallbacks = sources
+        .iter()
+        .filter(|source| source.torrent != selected_source.torrent)
+        .cloned()
+        .collect();
     Ok(SourceCatalog { sources, fallbacks })
 }
 
@@ -224,7 +240,12 @@ fn choose_catalog_item(items: &[CatalogItem]) -> Result<Choice> {
     choose_index("Select a title [1], [q] quit: ", count, false)
 }
 
-fn choose_episode(episodes: &[Episode]) -> Result<Choice> {
+/// Lets the caller reopen the episode list for a known season directly, so a
+/// failed stream search does not send the user back to the season menu.
+fn choose_episode(
+    episodes: &[Episode],
+    preferred_season: Option<u32>,
+) -> Result<(Choice, Option<u32>)> {
     let mut seasons: BTreeMap<u32, usize> = BTreeMap::new();
     for episode in episodes {
         *seasons.entry(episode.season).or_default() += 1;
@@ -233,9 +254,14 @@ fn choose_episode(episodes: &[Episode]) -> Result<Choice> {
     if season_values.is_empty() {
         return Err(anyhow!("No selectable season is available"));
     }
+    let mut current_season = preferred_season.filter(|season| season_values.contains(season));
+    let mut skip_season_prompt = current_season.is_some();
     loop {
         let selected_season = if season_values.len() == 1 {
             season_values[0]
+        } else if skip_season_prompt {
+            skip_season_prompt = false;
+            current_season.expect("skip_season_prompt is only set when current_season is set")
         } else {
             println!("Seasons:");
             for (position, season) in season_values.iter().enumerate() {
@@ -252,9 +278,10 @@ fn choose_episode(episodes: &[Episode]) -> Result<Choice> {
                 true,
             )? {
                 Choice::Selected(index) => season_values[index],
-                other => return Ok(other),
+                other => return Ok((other, current_season)),
             }
         };
+        current_season = Some(selected_season);
         let positions: Vec<usize> = episodes
             .iter()
             .enumerate()
@@ -275,11 +302,13 @@ fn choose_episode(episodes: &[Episode]) -> Result<Choice> {
             positions.len(),
             true,
         )? {
-            Choice::Selected(index) => return Ok(Choice::Selected(positions[index])),
+            Choice::Selected(index) => {
+                return Ok((Choice::Selected(positions[index]), current_season))
+            }
             // With one season there is no season step to return to.
-            Choice::Back if season_values.len() == 1 => return Ok(Choice::Back),
+            Choice::Back if season_values.len() == 1 => return Ok((Choice::Back, current_season)),
             Choice::Back => continue,
-            Choice::Quit => return Ok(Choice::Quit),
+            Choice::Quit => return Ok((Choice::Quit, current_season)),
         }
     }
 }
@@ -373,4 +402,39 @@ fn read_line(prompt: &str) -> Result<String> {
 
 fn is_series(item: &CatalogItem) -> bool {
     item.kind == CatalogKind::AnimeKitsu || item.media_type == "series"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_catalog, TorrentStream};
+
+    fn stream(number: u8, name: &str) -> TorrentStream {
+        TorrentStream {
+            info_hash: format!("{number:040x}"),
+            file_index: None,
+            file_name: Some(name.to_string()),
+            name: name.to_string(),
+            title: name.to_string(),
+            seeders: Some(1),
+            size: None,
+        }
+    }
+
+    #[test]
+    fn catalog_retries_other_listed_sources_when_the_first_source_fails() {
+        let streams = vec![
+            stream(1, "first 720p"),
+            stream(2, "second 720p"),
+            stream(3, "third 720p"),
+        ];
+
+        let catalog = build_catalog(&streams, 0).expect("catalog");
+        let labels: Vec<_> = catalog
+            .fallbacks
+            .iter()
+            .map(|source| source.label.as_str())
+            .collect();
+
+        assert_eq!(labels, vec!["second 720p", "third 720p"]);
+    }
 }

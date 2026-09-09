@@ -20,6 +20,9 @@ fn advances_across_a_season_boundary() {
         name: "Show".to_string(),
         release_info: Some("2026".to_string()),
         poster: None,
+        genres: None,
+        imdb_rating: None,
+        description: None,
         kind: CatalogKind::Cinemeta,
     };
     let episodes = vec![
@@ -48,6 +51,9 @@ fn builds_anime_subtitle_context_for_the_current_episode() {
         name: "Anime".to_string(),
         release_info: Some("2026".to_string()),
         poster: None,
+        genres: None,
+        imdb_rating: None,
+        description: None,
         kind: CatalogKind::AnimeKitsu,
     };
     let queue = EpisodeQueue::new(item, vec![episode("kitsu:42:10", 2, 10)], "kitsu:42:10")

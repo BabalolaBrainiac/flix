@@ -1,0 +1,15 @@
+name: Request a feature
+description: Suggest a change to Flix.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What do you want to do?
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: Describe the requested change
+    validations:
+      required: true

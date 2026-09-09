@@ -4,7 +4,10 @@ use flix::config::{Config, PlaybackCache};
 use flix::library::{Entry, Library, SourceSerde};
 use flix::media;
 use flix::session::{Source, TorrentFile, TorrentId, TorrentSession};
-use flix::{cli_download, cli_playback, cli_search, meta, player, stream_server, tui};
+use flix::{
+    cli_download, cli_playback, cli_reader, cli_recommend, cli_search, meta, player, stream_server,
+    tui,
+};
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -37,14 +40,67 @@ enum Commands {
         #[arg(long)]
         magnet: bool,
     },
+    Recommend {
+        keywords: String,
+        #[arg(long)]
+        show: bool,
+        #[arg(long)]
+        movie: bool,
+        #[arg(long)]
+        anime: bool,
+        #[arg(long, default_value = "20")]
+        limit: usize,
+        #[arg(long)]
+        min_rating: Option<f64>,
+        #[arg(long)]
+        since: Option<u32>,
+        #[arg(long, default_value = "1")]
+        page: usize,
+        #[arg(long)]
+        json: bool,
+        #[arg(long, conflicts_with = "magnet")]
+        download: bool,
+        #[arg(long)]
+        magnet: bool,
+    },
+    Manga {
+        #[command(subcommand)]
+        action: MangaAction,
+    },
     InstallPlayer,
     Tui,
 }
 
+#[derive(Subcommand)]
+enum MangaAction {
+    Search {
+        query: String,
+        #[arg(long, default_value = "en")]
+        lang: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Read {
+        id: String,
+        #[arg(long)]
+        chapter: Option<String>,
+        #[arg(long, default_value = "en")]
+        lang: String,
+        #[arg(long)]
+        from_page: Option<usize>,
+        #[arg(long)]
+        export_cbz: Option<String>,
+        #[arg(long)]
+        no_browser: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    flix::process_limits::raise_open_file_limit()?;
+
     // Remove playback caches left behind by a previous crash or force quit.
-    flix::config::sweep_orphaned_playback_caches();
+    flix::config::schedule_orphaned_playback_cache_sweep();
 
     let cli = Cli::parse();
     let config = Config::load()?;
@@ -108,6 +164,104 @@ async fn main() -> Result<()> {
         };
     }
 
+    if let Some(Commands::Recommend {
+        keywords,
+        show,
+        movie,
+        anime,
+        limit,
+        min_rating,
+        since,
+        page,
+        json,
+        download,
+        magnet,
+    }) = cli.command.as_ref()
+    {
+        let action_override = if *download {
+            Some(cli_search::SearchAction::Download)
+        } else if *magnet {
+            Some(cli_search::SearchAction::Magnet)
+        } else {
+            None
+        };
+        let recommend_options = cli_recommend::RecommendOptions {
+            keywords: keywords.clone(),
+            show: *show,
+            movie: *movie,
+            anime: *anime,
+            limit: *limit,
+            min_rating: *min_rating,
+            since_year: *since,
+            page: *page,
+            json: *json,
+            action_override,
+        };
+        let Some(selection) = cli_recommend::run(recommend_options).await? else {
+            return Ok(());
+        };
+        return match selection.action {
+            cli_search::SearchAction::Play => {
+                run_temporary_play(
+                    &config,
+                    &selection.magnet,
+                    selection.file_index,
+                    selection.episode_queue,
+                    selection.catalog,
+                )
+                .await
+            }
+            cli_search::SearchAction::Download => {
+                let session = Arc::new(TorrentSession::new(&config.download_dir).await?);
+                cli_download::run(
+                    session,
+                    &config.download_dir,
+                    &selection.magnet,
+                    selection.file_index,
+                )
+                .await
+            }
+            cli_search::SearchAction::Magnet => {
+                println!("{}", selection.magnet);
+                Ok(())
+            }
+        };
+    }
+
+    if let Some(Commands::Manga { action }) = cli.command.as_ref() {
+        return match action {
+            MangaAction::Search { query, lang, json } => {
+                cli_reader::search(cli_reader::MangaSearchOptions {
+                    query: query.clone(),
+                    lang: lang.clone(),
+                    json: *json,
+                })
+                .await
+            }
+            MangaAction::Read {
+                id,
+                chapter,
+                lang,
+                from_page,
+                export_cbz,
+                no_browser,
+            } => {
+                cli_reader::read(
+                    cli_reader::MangaReadOptions {
+                        manga_id: id.clone(),
+                        chapter: chapter.clone(),
+                        lang: lang.clone(),
+                        from_page: *from_page,
+                        export_cbz: export_cbz.clone(),
+                        no_browser: *no_browser,
+                    },
+                    &config.data_dir,
+                )
+                .await
+            }
+        };
+    }
+
     let session = Arc::new(TorrentSession::new(&config.download_dir).await?);
     let library = Arc::new(Mutex::new(Library::load(&config.data_dir)?));
 
@@ -148,6 +302,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Play { .. }) => unreachable!(),
         Some(Commands::Search { .. }) => unreachable!(),
+        Some(Commands::Recommend { .. }) => unreachable!(),
         Some(Commands::Tui) | None => {
             let mut terminal = tui::setup_terminal()?;
             let mut app =
@@ -159,6 +314,7 @@ async fn main() -> Result<()> {
 
             res?;
         }
+        Some(Commands::Manga { .. }) => unreachable!(),
         Some(Commands::InstallPlayer) => unreachable!(),
     }
 

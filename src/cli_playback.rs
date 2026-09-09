@@ -7,9 +7,8 @@ use crate::stream_server;
 use crate::stremio::{self, StremioClient, SubtitleContext};
 use crate::subtitles;
 use anyhow::{anyhow, Context, Result};
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use futures_util::StreamExt;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -101,12 +100,46 @@ pub async fn run_with_file_index(
         }
     };
     sync_queue_with_video(&mut episode_queue, active.current());
-    session
-        .select_files(active.id, &[active.current().index])
-        .await?;
     let context = current_subtitle_context(episode_queue.as_ref());
-    let prepared =
+    let mut prepared =
         prepare_video(&session, data_dir, &active, &server, context.as_ref(), true).await?;
+    if !prepared.stream_ready {
+        for source in &catalog.fallbacks {
+            println!("The selected source did not warm. Trying: {}", source.label);
+            let next_active =
+                match load_torrent(&session, &source.torrent, source.file_index, false).await {
+                    Ok(next_active) => next_active,
+                    Err(error) => {
+                        eprintln!("The alternative source could not start: {error}");
+                        continue;
+                    }
+                };
+            let next_prepared = prepare_video(
+                &session,
+                data_dir,
+                &next_active,
+                &server,
+                context.as_ref(),
+                false,
+            )
+            .await?;
+            if !next_prepared.stream_ready {
+                let _ = session.remove(next_active.id, true).await;
+                continue;
+            }
+            if let Err(error) = session.remove(active.id, true).await {
+                eprintln!("Old source cleanup will finish when Flix exits: {error}");
+            }
+            active = next_active;
+            prepared = next_prepared;
+            break;
+        }
+    }
+    if !prepared.stream_ready {
+        return Err(anyhow!(
+            "No listed source warmed in time. Select a different episode or try again later."
+        ));
+    }
     let mut current = launch_prepared(selected_player, prepared)?;
 
     loop {
@@ -275,10 +308,12 @@ impl ActiveTorrent {
 }
 
 struct PreparedPlayback {
+    selected_tracks: Option<playback::anime::SelectedTracks>,
     title: String,
     url: String,
     subtitle_files: Vec<String>,
     file_length: u64,
+    stream_ready: bool,
 }
 
 struct PreparedNext {
@@ -305,13 +340,24 @@ async fn load_torrent(
     allow_choice: bool,
 ) -> Result<ActiveTorrent> {
     println!("Adding torrent...");
-    let id = session.add(Source::parse(torrent)?).await?;
+    let source = Source::parse(torrent)?;
+    // Select the file at add time when the catalog gives its index. That keeps
+    // the torrent from a second file selection on a live torrent, which can
+    // deadlock and which drops the peers that connect during the change.
+    let (id, preselected) = match preferred_file_index {
+        Some(file_index) => session.add_with_file(source, file_index).await?,
+        None => (session.add(source).await?, false),
+    };
     let files = session.files(id)?;
     let videos: Vec<_> = media::ordered_videos(&files).into_iter().cloned().collect();
     if videos.is_empty() {
         return Err(anyhow!("Torrent contains no supported video file"));
     }
-    session.select_files(id, &[]).await?;
+    if !preselected {
+        // Nothing is selected yet, so stop a download of the complete torrent
+        // while the user chooses a video.
+        session.select_files(id, &[]).await?;
+    }
     let position = preferred_file_index
         .and_then(|file_index| videos.iter().position(|video| video.index == file_index))
         .map(Ok)
@@ -322,6 +368,10 @@ async fn load_torrent(
                 Ok(0)
             }
         })?;
+    let target = videos[position].index;
+    if crate::session::needs_file_selection(preferred_file_index, preselected, target) {
+        session.select_files(id, &[target]).await?;
+    }
     Ok(ActiveTorrent {
         id,
         videos,
@@ -385,7 +435,27 @@ async fn prepare_video(
             download_subtitles(session, data_dir, active.id, video.index, &selected).await;
     }
     report_subtitles(&subtitle_files);
+    let mut stream_ready = preparation.stream_ready;
+    let selected_tracks = if subtitle_context.is_some() && stream_ready {
+        let (reader, _) = session.open_stream(active.id, video.index)?;
+        match tokio::time::timeout(
+            Duration::from_secs(3),
+            playback::anime::inspect(reader, !subtitle_files.is_empty()),
+        )
+        .await
+        {
+            Ok(Ok(tracks)) => Some(tracks),
+            result => {
+                eprintln!("Anime language check failed: {result:?}");
+                stream_ready = false;
+                None
+            }
+        }
+    } else {
+        None
+    };
     Ok(PreparedPlayback {
+        selected_tracks,
         title: video.name.clone(),
         url: stream_server::stream_url(server, active.id, video.index),
         subtitle_files: subtitle_files
@@ -393,6 +463,7 @@ async fn prepare_video(
             .map(|path| path.to_string_lossy().into_owned())
             .collect(),
         file_length: video.length,
+        stream_ready,
     })
 }
 
@@ -448,8 +519,14 @@ fn launch_prepared(
     selected_player: &player::Player,
     prepared: PreparedPlayback,
 ) -> Result<RunningPlayer> {
+    if !prepared.stream_ready {
+        return Err(anyhow!(
+            "The source is not ready for playback. Select another source."
+        ));
+    }
     println!("Launching player at {}", selected_player.path.display());
     let options = PlaybackOptions::new(prepared.title, prepared.file_length)
+        .with_selected_tracks(prepared.selected_tracks)
         .with_subtitles(prepared.subtitle_files)
         .with_show_output(std::env::var_os("FLIX_PLAYER_LOGS").is_some());
     let player = player::launch(selected_player, &prepared.url, &options)?;
@@ -472,32 +549,69 @@ async fn prepare_source_change(
         return Ok(None);
     };
     println!("Switching to: {}", source.label);
-    let next_active = load_torrent(session, &source.torrent, source.file_index, true).await?;
-    sync_queue_with_video(episode_queue, next_active.current());
-    session
-        .select_files(next_active.id, &[next_active.current().index])
-        .await?;
     let context = current_subtitle_context(episode_queue.as_ref());
-    let prepared = match prepare_video(
-        session,
-        data_dir,
-        &next_active,
-        server,
-        context.as_ref(),
-        false,
-    )
-    .await
-    {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            let _ = session.remove(next_active.id, true).await;
-            return Err(error);
+    for candidate in sources_for_change(catalog, source) {
+        if candidate.torrent != source.torrent {
+            println!(
+                "The selected source did not warm. Trying: {}",
+                candidate.label
+            );
         }
-    };
-    Ok(Some(PreparedSwitch {
-        active: next_active,
-        prepared,
-    }))
+
+        let next_active =
+            match load_torrent(session, &candidate.torrent, candidate.file_index, true).await {
+                Ok(next_active) => next_active,
+                Err(error) => {
+                    eprintln!("The alternative source could not start: {error}");
+                    continue;
+                }
+            };
+        let prepared = match prepare_video(
+            session,
+            data_dir,
+            &next_active,
+            server,
+            context.as_ref(),
+            false,
+        )
+        .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                eprintln!("The alternative source could not prepare: {error}");
+                let _ = session.remove(next_active.id, true).await;
+                continue;
+            }
+        };
+        if !prepared.stream_ready {
+            let _ = session.remove(next_active.id, true).await;
+            continue;
+        }
+
+        sync_queue_with_video(episode_queue, next_active.current());
+        return Ok(Some(PreparedSwitch {
+            active: next_active,
+            prepared,
+        }));
+    }
+
+    Err(anyhow!(
+        "No selected source warmed in time. Select another source."
+    ))
+}
+
+fn sources_for_change<'a>(
+    catalog: &'a SourceCatalog,
+    selected: &'a PlaybackSource,
+) -> Vec<&'a PlaybackSource> {
+    let mut candidates = vec![selected];
+    candidates.extend(
+        catalog
+            .sources
+            .iter()
+            .filter(|candidate| candidate.torrent != selected.torrent),
+    );
+    candidates
 }
 
 async fn apply_source_change(
@@ -559,7 +673,9 @@ async fn prepare_next(
         episode.title.as_deref().unwrap_or_default()
     );
     let client = StremioClient::from_env()?;
-    let streams = client.streams("series", &episode.stream_id).await?;
+    let streams = client
+        .streams_for("series", &episode.stream_id, subtitle_context.is_some())
+        .await?;
     let candidates = stremio::automatic_playback_candidates(&streams);
     let stream = candidates
         .first()
@@ -591,9 +707,6 @@ async fn prepare_next(
             load_alternatives(session, &alternatives).await?
         }
     };
-    session
-        .select_files(next_active.id, &[next_active.current().index])
-        .await?;
     let prepared = match prepare_video(
         session,
         data_dir,
@@ -667,7 +780,7 @@ async fn wait_for_player(
         keys.join(", ")
     );
     let raw_mode = RawModeGuard::enter()?;
-    let mut events = EventStream::new();
+    let mut input_available = true;
     let mut poll = tokio::time::interval(Duration::from_millis(200));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let event = loop {
@@ -676,10 +789,10 @@ async fn wait_for_player(
                 if player.has_exited()? {
                     break PlaybackEvent::Exited;
                 }
-            }
-            event = events.next() => {
-                match event {
-                    Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
+                if input_available {
+                    match event::poll(Duration::ZERO) {
+                        Ok(true) => match event::read() {
+                            Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
                         if has_next && matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N')) {
                             break PlaybackEvent::NextRequested;
                         }
@@ -695,9 +808,18 @@ async fn wait_for_player(
                             break PlaybackEvent::QuitRequested;
                         }
                     }
-                    Some(Ok(_)) => {}
-                    Some(Err(error)) => return Err(error.into()),
-                    None => {}
+                            Ok(_) => {}
+                            Err(error) => {
+                                eprintln!("Playback controls are unavailable: {error}");
+                                input_available = false;
+                            }
+                        },
+                        Ok(false) => {}
+                        Err(error) => {
+                            eprintln!("Playback controls are unavailable: {error}");
+                            input_available = false;
+                        }
+                    }
                 }
             }
         }
@@ -946,4 +1068,36 @@ enum Action {
     Choose,
     Replay,
     Quit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sources_for_change, PlaybackSource, SourceCatalog};
+
+    fn source(torrent: &str) -> PlaybackSource {
+        PlaybackSource {
+            torrent: torrent.to_string(),
+            file_index: None,
+            quality: "1080p".to_string(),
+            label: torrent.to_string(),
+            size: None,
+            seeders: None,
+        }
+    }
+
+    #[test]
+    fn source_change_retries_other_known_sources() {
+        let catalog = SourceCatalog {
+            sources: vec![source("first"), source("selected"), source("last")],
+            fallbacks: Vec::new(),
+        };
+
+        let candidates = sources_for_change(&catalog, &catalog.sources[1]);
+        let torrents: Vec<_> = candidates
+            .into_iter()
+            .map(|candidate| candidate.torrent.as_str())
+            .collect();
+
+        assert_eq!(torrents, vec!["selected", "first", "last"]);
+    }
 }

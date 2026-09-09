@@ -20,6 +20,14 @@ pub enum MediaRef {
 }
 
 impl MediaRef {
+    pub fn is_anime(&self) -> bool {
+        match self {
+            Self::Movie { catalog_id, .. } | Self::Episode { catalog_id, .. } => {
+                catalog_id.starts_with("kitsu:")
+            }
+        }
+    }
+
     pub fn display_title(&self) -> String {
         match self {
             MediaRef::Movie { title, .. } => title.clone(),

@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod credentials;
+pub mod debug_report;
 pub mod gateway;
 pub mod server;
 pub mod service;

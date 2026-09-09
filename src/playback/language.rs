@@ -7,6 +7,15 @@ pub struct LanguagePolicy {
 }
 
 impl LanguagePolicy {
+    pub fn anime() -> Self {
+        Self {
+            audio_languages: ["jpn", "ja", "japanese"].map(str::to_string).to_vec(),
+            subtitle_languages: PREFERRED_LANGUAGES
+                .iter()
+                .map(|value| value.to_string())
+                .collect(),
+        }
+    }
     /// Creates the standard playback policy.
     ///
     /// Audio: prefer English, then fall back to the file's default track. This

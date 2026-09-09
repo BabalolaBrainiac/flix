@@ -5,6 +5,12 @@ import type {
   PlayCommand,
   PlaybackSnapshot,
   PlaybackStatusResponse,
+  ReaderChaptersResponse,
+  ReaderPagesResponse,
+  ReaderProgressResponse,
+  ReaderSearchResponse,
+  RecommendCommand,
+  RecommendResponse,
   SearchResponse,
   SettingsResponse,
   StreamsResponse,
@@ -77,6 +83,10 @@ export async function getHealth(): Promise<{ status: string; version: string }> 
   return request('/api/health');
 }
 
+export async function exportDebugReport(): Promise<unknown> {
+  return request('/api/diagnostics/export');
+}
+
 export async function getStatus(): Promise<PlaybackStatusResponse> {
   return request('/api/status');
 }
@@ -114,6 +124,13 @@ export async function search(query: string, animeOnly = false): Promise<SearchRe
   });
 }
 
+export async function getRecommendations(command: RecommendCommand): Promise<RecommendResponse> {
+  return request('/api/recommend', {
+    method: 'POST',
+    body: JSON.stringify(command),
+  });
+}
+
 export async function getEpisodes(itemId: string, isAnime: boolean): Promise<EpisodesResponse> {
   return request('/api/episodes', {
     method: 'POST',
@@ -121,10 +138,11 @@ export async function getEpisodes(itemId: string, isAnime: boolean): Promise<Epi
   });
 }
 
-export async function getStreams(mediaType: string, streamId: string): Promise<StreamsResponse> {
+export async function getStreams(mediaType: string, streamId: string, isAnime = false, signal?: AbortSignal): Promise<StreamsResponse> {
   return request('/api/streams', {
     method: 'POST',
-    body: JSON.stringify({ media_type: mediaType, stream_id: streamId }),
+    signal,
+    body: JSON.stringify({ media_type: mediaType, stream_id: streamId, is_anime: isAnime }),
   });
 }
 
@@ -214,5 +232,37 @@ export async function quitApp(): Promise<{ success: boolean }> {
   return request('/api/quit', {
     method: 'POST',
     body: JSON.stringify({}),
+  });
+}
+
+export async function readerSearch(query: string, lang = 'en'): Promise<ReaderSearchResponse> {
+  return request('/api/reader/search', {
+    method: 'POST',
+    body: JSON.stringify({ query, lang }),
+  });
+}
+
+export async function readerChapters(mangaId: string, lang = 'en'): Promise<ReaderChaptersResponse> {
+  return request('/api/reader/chapters', {
+    method: 'POST',
+    body: JSON.stringify({ manga_id: mangaId, lang }),
+  });
+}
+
+export async function readerPages(chapterId: string, mangaId: string, lang = 'en'): Promise<ReaderPagesResponse> {
+  return request('/api/reader/pages', {
+    method: 'POST',
+    body: JSON.stringify({ chapter_id: chapterId, manga_id: mangaId, lang }),
+  });
+}
+
+export async function readerGetProgress(publicationId: string): Promise<ReaderProgressResponse> {
+  return request(`/api/reader/progress?publication_id=${encodeURIComponent(publicationId)}`);
+}
+
+export async function readerSaveProgress(publicationId: string, chapterId: string, page: number): Promise<void> {
+  return request('/api/reader/progress', {
+    method: 'POST',
+    body: JSON.stringify({ publication_id: publicationId, chapter_id: chapterId, page }),
   });
 }

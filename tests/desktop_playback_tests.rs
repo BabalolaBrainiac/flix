@@ -108,6 +108,9 @@ fn desktop_episode_queue_seed_advances_across_season_boundaries() {
         name: seed.catalog_item.name.clone(),
         release_info: seed.catalog_item.release_info.clone(),
         poster: seed.catalog_item.poster.clone(),
+        genres: None,
+        imdb_rating: None,
+        description: None,
         kind: CatalogKind::Cinemeta,
     };
     let episodes: Vec<Episode> = seed

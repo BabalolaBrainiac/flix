@@ -47,6 +47,7 @@ The desktop application needs the `web-ui` feature. Build the web interface firs
 ```sh
 npm --prefix web install
 npm --prefix web run build
+touch web/dist/.gitkeep
 cargo build --release --features web-ui --bin flix-desktop
 ./target/release/flix-desktop
 ```
@@ -62,6 +63,8 @@ Use these options:
 - `--port <PORT>`: Bind the local web server to a fixed port. Omit it to use any free port. A fixed port lets a second instance run beside the first.
 
 The desktop server binds only to `127.0.0.1`. Every API request requires a token that the process creates in memory.
+
+Merging to `main` runs checks and builds installer artifacts. It does not publish a GitHub release. Publication requires the separate manual **Release** workflow.
 
 ### Install a packaged build on macOS
 
@@ -183,6 +186,8 @@ Press `Enter` at the torrent prompt to use the displayed default. If the preferr
 
 For a series search, Flix keeps the episode list after playback starts. The next action uses the next pack file or searches the next catalog episode. You do not need to repeat the title search.
 
+In the web app, select an episode before Flix requests its sources. Switching seasons clears the selection. Movies show their sources directly.
+
 Use a direct action when you do not want the final action prompt:
 
 ```sh
@@ -235,26 +240,91 @@ Do not place the key in the repository. Flix works without this key. Missing sco
 
 Letterboxd metadata is optional. Flix reads public JSON-LD data when it adds a new library entry. A Letterboxd error does not stop the torrent.
 
+## Recommendations and manga
+
+Open **Discover** for recommendations. Open **Reader** to search MangaDex, select a chapter, and save your reading position.
+
+The CLI supports these actions:
+
+```sh
+flix recommend "space adventure" --movie --limit 10
+flix recommend "fantasy" --anime --json
+flix manga search "title" --lang en
+flix manga read <manga-id> --lang en
+flix manga read <manga-id> --export-cbz chapter.cbz
+```
+
+CBZ exports store chapter images in a ZIP archive. Reader queries currently inspect up to 500 chapter records per title.
+
+## Anime audio and subtitles
+
+Anime search removes sources that explicitly offer only dubbed audio. Dual audio sources remain eligible for a track check.
+
+The CLI and web app check MKV track labels before anime playback. Flix selects a track marked as original. Otherwise, it selects Japanese audio.
+
+Flix selects labeled English subtitles. It excludes embedded tracks marked as forced, signs, or songs. An external English subtitle can satisfy this requirement.
+
+Flix rejects unknown audio and missing English subtitles. It does not use the release default to bypass this check. Other file formats cannot pass this strict check yet.
+
+These checks use file metadata. Incorrect language labels can still give incorrect results. Pasted magnets without anime catalog context use the standard playback settings.
+
 ## Audio language
 
-Many torrent releases hold more than one audio track and mark a track other than
-English as the default. Flix therefore tells the player which language to prefer.
-It passes `--alang` and `--slang` to mpv, and `--audio-language` and
-`--sub-language` to VLC. The default preference is `eng,en,english`.
-
-The player still uses the release default when no track declares one of these
-languages. Change the preference with a comma separated list, most preferred
-first:
+Other playback prefers English audio and English subtitles. Set `FLIX_AUDIO_LANGUAGE` to change the audio preference outside anime search:
 
 ```sh
 export FLIX_AUDIO_LANGUAGE=jpn,ja,japanese
 ```
 
+## Debug reports and cleanup
+
+Open **Diagnostics** to export a debug report. Use **Open an issue** to report a problem or request a feature.
+
+Reports contain the app version, operating system, session ID, playback stages, elapsed times, and error codes. They also record player exits, exit codes, signals, and process duration. Reports exclude titles, paths, source links, and credentials.
+
+Flix checks for immediate player exits before it shows the player as open. The status does not confirm video decoding. Later player errors remain visible until you dismiss them.
+
+Flix keeps up to 256 events per local session report. Startup cleanup limits older reports to 2 MiB and seven days. Flix does not upload reports.
+
+Playback uses a temporary directory. Stop, normal player exit, and application shutdown release the session. Startup cleanup removes abandoned playback directories and keeps locked active directories.
+
+Reader page cleanup limits the cache to 128 MiB. Startup cleanup limits subtitle files to 32 MiB. Reading progress and saved downloads remain separate.
+
+A selected video can still occupy its file size during streaming. Flix removes its temporary data after playback. Saved downloads remain until you remove them.
+
+### Local release checks
+
+Build the web interface and desktop binary with the commands above. Close your old Flix instance before you start the new binary.
+
+```sh
+./target/release/flix-desktop --check
+./target/release/flix-desktop
+```
+
+The system check confirms core setup and player detection. It does not test live video playback.
+
+1. Open a series result. Confirm that sources remain hidden until you select an episode.
+2. Switch seasons. Confirm that the old selection and its sources disappear.
+3. Play an anime episode. Confirm original audio and English subtitles in the player.
+4. Use Stop during loading, buffering, and playback. Start another episode after each stop.
+5. Close the player. Confirm that Flix releases the playback session.
+6. Leave the browser tab during playback. Return and check that the status updates.
+7. Start a second Flix instance. Confirm that Stop affects only its own player.
+8. Export a debug report from Diagnostics. Check the player exit details after a failed launch.
+
+For a local VLC process check, supply a sample video that lasts more than four seconds:
+
+```sh
+cargo run --example player_probe -- /path/to/sample.mkv
+```
+
+This check opens VLC briefly and stops its process. It does not confirm video or subtitle quality.
+
 ## English subtitles
 
 Flix searches OpenSubtitles for the selected episode. The CLI lists up to 20 English subtitle releases before download. Select one result, several results as `1,2`, `a` for the top results, or `0` to play without an external subtitle. Flix downloads at most 3 subtitles.
 
-Flix downloads every selected subtitle before it starts the player. It then gives each file to the player as a selectable subtitle track. mpv receives one `--sub-file` option for each track. VLC receives the first track through `--sub-file` and the other tracks through `--input-slave`. The VLC subtitle menu therefore lists every downloaded subtitle. Playback continues if subtitle search or download fails.
+Flix downloads every selected subtitle before it starts the player. It then gives each file to the player as a selectable subtitle track. mpv receives one `--sub-file` option for each track. VLC receives the first track through `--sub-file` and the other tracks through `--input-slave`. The VLC subtitle menu therefore lists every downloaded subtitle. Other playback continues if subtitle search or download fails. Anime playback requires an English subtitle.
 
 Flix reuses subtitles that it downloaded before for the same torrent video. In that case it gives all cached files to the player and does not ask again.
 

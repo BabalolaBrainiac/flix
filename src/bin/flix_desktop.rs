@@ -32,11 +32,17 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    if let Err(error) = flix::process_limits::raise_open_file_limit() {
+        tracing::warn!("Could not increase the open file limit: {error}");
+    }
+
     // Remove playback caches left behind by a previous crash or force quit.
-    flix::config::sweep_orphaned_playback_caches();
+    flix::config::schedule_orphaned_playback_cache_sweep();
 
     let args = Args::parse();
     let config = Config::load()?;
+    let cache_data = config.data_dir.clone();
+    tokio::task::spawn_blocking(move || flix::storage::trim_media_caches(&cache_data));
     let service = DesktopService::new(config);
 
     if args.check {
@@ -68,7 +74,7 @@ async fn main() -> Result<()> {
     // Run server with Ctrl+C signal and internal /api/quit support
     let shutdown_tx = server.state.shutdown_tx.clone();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
+        if shutdown_signal().await.is_ok() {
             println!("\nReceived shutdown signal. Stopping Flix Desktop...");
             let _ = shutdown_tx.send(());
         }
@@ -88,4 +94,18 @@ fn open_browser(url: &str) {
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let _ = Command::new("xdg-open").arg(url).spawn();
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }

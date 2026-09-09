@@ -7,13 +7,18 @@ use axum::{
     routing::{get, head},
     Router,
 };
+use futures_util::Stream;
 use serde::Deserialize;
-use std::io::SeekFrom;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use std::{
+    io::SeekFrom,
+    pin::Pin,
+    task::{Context as TaskContext, Poll},
+};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
@@ -23,11 +28,20 @@ use crate::session::{TorrentId, TorrentSession};
 // 1 MiB read buffer for streaming responses.
 // The tokio-util default is 4 KiB, which is too small for high-bitrate video.
 const STREAM_READ_BUF: usize = 1_048_576;
+const MAX_ACTIVE_STREAMS: usize = 12;
+const STREAM_SLOT_WAIT: Duration = Duration::from_secs(2);
 
 pub struct ServerHandle {
     port: u16,
     token: String,
     task: JoinHandle<()>,
+}
+
+impl ServerHandle {
+    pub async fn shutdown(&mut self) {
+        self.task.abort();
+        let _ = (&mut self.task).await;
+    }
 }
 
 impl Drop for ServerHandle {
@@ -40,6 +54,23 @@ pub struct AppState {
     pub session: Arc<TorrentSession>,
     pub token: String,
     request_window: Mutex<RequestWindow>,
+    stream_slots: Arc<Semaphore>,
+}
+
+struct PermittedStream<S> {
+    stream: S,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl<S> Stream for PermittedStream<S>
+where
+    S: Stream + Unpin,
+{
+    type Item = S::Item;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.get_mut().stream).poll_next(context)
+    }
 }
 
 struct RequestWindow {
@@ -76,6 +107,7 @@ pub async fn serve(session: Arc<TorrentSession>) -> Result<ServerHandle> {
             started_at: Instant::now(),
             requests: 0,
         }),
+        stream_slots: Arc::new(Semaphore::new(MAX_ACTIVE_STREAMS)),
     });
 
     let app = Router::new()
@@ -186,6 +218,11 @@ async fn handler(
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
+    let permit = tokio::time::timeout(STREAM_SLOT_WAIT, app.stream_slots.clone().acquire_owned())
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+
     let (mut stream, len) = app
         .session
         .open_stream(id, file)
@@ -218,10 +255,7 @@ async fn handler(
                 .header(header::ACCEPT_RANGES, "bytes")
                 .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"))
                 .header(header::CONTENT_LENGTH, end - start + 1)
-                .body(Body::from_stream(ReaderStream::with_capacity(
-                    take,
-                    STREAM_READ_BUF,
-                )))
+                .body(stream_body(take, permit))
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
         }
         None => {
@@ -239,21 +273,29 @@ async fn handler(
                     .header(header::CONTENT_TYPE, mime_for(&name))
                     .header(header::ACCEPT_RANGES, "bytes")
                     .header(header::CONTENT_LENGTH, len)
-                    .body(Body::from_stream(ReaderStream::with_capacity(
-                        stream,
-                        STREAM_READ_BUF,
-                    )))
+                    .body(stream_body(stream, permit))
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
             }
         }
     }
 }
 
+fn stream_body(
+    reader: impl AsyncRead + Send + Sync + Unpin + 'static,
+    permit: OwnedSemaphorePermit,
+) -> Body {
+    Body::from_stream(PermittedStream {
+        stream: ReaderStream::with_capacity(reader, STREAM_READ_BUF),
+        _permit: permit,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_range, RequestWindow};
+    use super::{parse_range, RequestWindow, MAX_ACTIVE_STREAMS};
     use axum::http::HeaderValue;
     use std::time::{Duration, Instant};
+    use tokio::sync::Semaphore;
 
     fn parse(value: &str, length: u64) -> Option<Result<(u64, u64), ()>> {
         parse_range(
@@ -283,5 +325,18 @@ mod tests {
         assert!(!window.allow());
         window.started_at = Instant::now() - Duration::from_secs(2);
         assert!(window.allow());
+    }
+
+    #[tokio::test]
+    async fn limits_active_reader_buffers() {
+        let slots = std::sync::Arc::new(Semaphore::new(MAX_ACTIVE_STREAMS));
+        let mut permits = Vec::new();
+        for _ in 0..MAX_ACTIVE_STREAMS {
+            permits.push(slots.clone().try_acquire_owned().expect("stream slot"));
+        }
+
+        assert!(slots.clone().try_acquire_owned().is_err());
+        drop(permits.pop());
+        assert!(slots.clone().try_acquire_owned().is_ok());
     }
 }

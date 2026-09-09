@@ -1,4 +1,7 @@
-use flix::media::{next_video_position, ordered_videos, select_default_video, warmup_ranges};
+use flix::media::{
+    metadata_prefetch_range, next_video_position, ordered_videos, select_default_video,
+    startup_range, warmup_ranges,
+};
 use flix::session::TorrentFile;
 
 fn video(index: usize, name: &str, length: u64) -> TorrentFile {
@@ -58,4 +61,12 @@ fn warmup_ranges_expand_for_large_files() {
     assert_eq!(ranges.len(), 2);
     assert_eq!(ranges[0], 0..16 * 1_048_576);
     assert_eq!(ranges[1], four_gb - 4 * 1_048_576..four_gb);
+}
+
+#[test]
+fn startup_warmup_does_not_wait_for_optional_tail_metadata() {
+    let length = 10 * 1_048_576;
+
+    assert_eq!(startup_range(length), Some(0..4 * 1_048_576));
+    assert_eq!(metadata_prefetch_range(length), Some(9 * 1_048_576..length));
 }

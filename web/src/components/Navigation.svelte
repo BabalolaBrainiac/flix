@@ -1,10 +1,10 @@
 <script lang="ts">
   import type { PlaybackSnapshot } from '../lib/types';
-  import { Search, Film, Download, Settings, Activity } from 'lucide-svelte';
+  import { Search, Compass, Film, Download, BookOpen, Settings, Activity } from 'lucide-svelte';
 
-  export let activeTab: 'search' | 'continue' | 'downloads' | 'settings' | 'diagnostics' = 'search';
+  export let activeTab: 'search' | 'discover' | 'continue' | 'downloads' | 'reader' | 'settings' | 'diagnostics' = 'search';
   export let playbackState: PlaybackSnapshot = { state: 'idle' };
-  export let onSelectTab: (tab: 'search' | 'continue' | 'downloads' | 'settings' | 'diagnostics') => void;
+  export let onSelectTab: (tab: 'search' | 'discover' | 'continue' | 'downloads' | 'reader' | 'settings' | 'diagnostics') => void;
 
   $: isPlaying = playbackState.state === 'playing';
 </script>
@@ -28,6 +28,14 @@
       </button>
 
       <button
+        class="nav-tab {activeTab === 'discover' ? 'active' : ''}"
+        on:click={() => onSelectTab('discover')}
+      >
+        <Compass size={15} />
+        <span>Discover</span>
+      </button>
+
+      <button
         class="nav-tab {activeTab === 'continue' ? 'active' : ''}"
         on:click={() => onSelectTab('continue')}
       >
@@ -45,6 +53,14 @@
       >
         <Download size={15} />
         <span>Downloads</span>
+      </button>
+
+      <button
+        class="nav-tab {activeTab === 'reader' ? 'active' : ''}"
+        on:click={() => onSelectTab('reader')}
+      >
+        <BookOpen size={15} />
+        <span>Reader</span>
       </button>
 
       <button
@@ -122,6 +138,7 @@
   }
 
   .nav-tab {
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -149,5 +166,24 @@
     height: 6px;
     border-radius: 50%;
     background: var(--status-green);
+  }
+
+  .nav-tab:focus-visible, .brand:focus-visible {
+    outline: 2px solid var(--text-primary);
+    outline-offset: 2px;
+  }
+
+  @media (max-width: 960px) {
+    .nav-container {
+      height: auto;
+      min-width: 0;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 12px;
+      padding: 14px 16px 10px;
+    }
+    .brand { align-self: flex-start; }
+    .nav-tabs { min-width: 0; overflow-x: auto; }
+    .nav-tab { padding: 8px 12px; }
   }
 </style>

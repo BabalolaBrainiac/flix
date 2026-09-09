@@ -34,6 +34,9 @@ pub struct CatalogItem {
     pub name: String,
     pub release_info: Option<String>,
     pub poster: Option<String>,
+    pub genres: Option<Vec<String>>,
+    pub imdb_rating: Option<String>,
+    pub description: Option<String>,
     pub kind: CatalogKind,
 }
 
@@ -91,6 +94,10 @@ struct CatalogRecord {
     #[serde(rename = "releaseInfo")]
     release_info: Option<String>,
     poster: Option<String>,
+    genres: Option<Vec<String>>,
+    #[serde(rename = "imdbRating")]
+    imdb_rating: Option<String>,
+    description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -172,6 +179,14 @@ pub fn parse_catalog_response(value: Value, kind: CatalogKind) -> Result<Vec<Cat
             name: sanitize_text(&record.name, 200),
             release_info: record.release_info.map(|value| sanitize_text(&value, 80)),
             poster: record.poster.map(|value| sanitize_text(&value, 500)),
+            genres: record.genres.map(|values| {
+                values
+                    .iter()
+                    .map(|value| sanitize_text(value, 100))
+                    .collect()
+            }),
+            imdb_rating: record.imdb_rating.map(|value| sanitize_text(&value, 20)),
+            description: record.description.map(|value| sanitize_text(&value, 500)),
             kind,
         })
         .collect())
@@ -283,7 +298,12 @@ pub fn automatic_playback_candidates(streams: &[TorrentStream]) -> Vec<&TorrentS
         return Vec::new();
     };
     if stream_quality(first) != StreamQuality::Native4k {
-        return vec![first];
+        let mut seen = HashSet::new();
+        return streams
+            .iter()
+            .filter(|stream| seen.insert((&stream.info_hash, stream.file_index)))
+            .take(4)
+            .collect();
     }
 
     let mut seen = HashSet::new();
@@ -468,6 +488,16 @@ impl StremioClient {
     }
 
     pub async fn streams(&self, media_type: &str, id: &str) -> Result<Vec<TorrentStream>> {
+        self.streams_for(media_type, id, id.starts_with("kitsu:"))
+            .await
+    }
+
+    pub async fn streams_for(
+        &self,
+        media_type: &str,
+        id: &str,
+        anime: bool,
+    ) -> Result<Vec<TorrentStream>> {
         let stream_type = if id.starts_with("kitsu:") || id.contains(':') {
             "series"
         } else {
@@ -477,7 +507,13 @@ impl StremioClient {
         let mut last_error = None;
         for attempt in 0..3 {
             match self.get_json(url.clone(), "stream").await {
-                Ok(value) => return parse_stream_response(value),
+                Ok(value) => {
+                    let mut streams = parse_stream_response(value)?;
+                    if anime {
+                        streams.retain(anime_source_candidate);
+                    }
+                    return Ok(streams);
+                }
                 Err(error) if attempt < 2 && is_transient_stream_error(&error) => {
                     last_error = Some(error);
                     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -554,6 +590,21 @@ impl StremioClient {
         parse_catalog_response(self.get_json(url, "catalog").await?, kind)
     }
 
+    pub async fn discover(
+        &self,
+        media_type: &str,
+        catalog_id: &str,
+        extra: &str,
+        kind: CatalogKind,
+    ) -> Result<Vec<CatalogItem>> {
+        let base = match kind {
+            CatalogKind::Cinemeta => &self.cinemeta_base,
+            CatalogKind::AnimeKitsu => &self.anime_base,
+        };
+        let url = catalog_url(base, media_type, catalog_id, extra)?;
+        parse_catalog_response(self.get_json(url, "catalog").await?, kind)
+    }
+
     async fn get_json(&self, url: reqwest::Url, operation: &str) -> Result<Value> {
         let response = self
             .client
@@ -625,6 +676,38 @@ fn addon_base(name: &str, default: &str) -> Result<reqwest::Url> {
     let path = url.path().trim_end_matches('/').to_string();
     url.set_path(&format!("{path}/"));
     Ok(url)
+}
+
+pub fn catalog_url(
+    base: &reqwest::Url,
+    media_type: &str,
+    catalog_id: &str,
+    extra: &str,
+) -> Result<reqwest::Url> {
+    if !matches!(media_type, "movie" | "series" | "anime") {
+        return Err(anyhow!("Stremio catalog media type is invalid"));
+    }
+    if catalog_id.is_empty()
+        || catalog_id.len() > 128
+        || !catalog_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(anyhow!("Stremio catalog identifier is invalid"));
+    }
+    if extra.is_empty()
+        || extra.len() > 256
+        || !extra.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '=' | '&' | ',')
+        })
+    {
+        return Err(anyhow!("Stremio catalog extra parameters are invalid"));
+    }
+    reqwest::Url::parse(&format!(
+        "{}catalog/{media_type}/{catalog_id}/{extra}.json",
+        base.as_str()
+    ))
+    .context("Failed to build the Stremio catalog URL")
 }
 
 fn resource_url(
@@ -725,4 +808,28 @@ fn sanitize_text(value: &str, limit: usize) -> String {
         .chars()
         .take(limit)
         .collect()
+}
+
+/// Removes sources that explicitly offer only dubbed audio.
+pub fn anime_source_candidate(stream: &TorrentStream) -> bool {
+    let description = format!(
+        "{} {} {}",
+        stream.name,
+        stream.title,
+        stream.file_name.as_deref().unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+    let words: Vec<_> = description
+        .split(|character: char| !character.is_alphanumeric())
+        .collect();
+    let original = words.iter().any(|word| {
+        matches!(
+            *word,
+            "jpn" | "japanese" | "ja" | "dual" | "multi" | "multiaudio"
+        )
+    });
+    let dubbed = words
+        .iter()
+        .any(|word| matches!(*word, "dub" | "dubbed" | "dublado"));
+    !dubbed || original
 }

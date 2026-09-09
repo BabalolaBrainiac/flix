@@ -61,17 +61,38 @@ fn episode_key(name: &str) -> (bool, u32, u32) {
     }
 }
 
-pub fn warmup_ranges(length: u64) -> Vec<Range<u64>> {
+pub fn startup_range(length: u64) -> Option<Range<u64>> {
     if length == 0 {
-        return Vec::new();
+        return None;
     }
-    let (head, tail) = if length >= WARMUP_LARGE_THRESHOLD {
+
+    let (head, _) = warmup_sizes(length);
+    Some(0..length.min(head))
+}
+
+pub fn metadata_prefetch_range(length: u64) -> Option<Range<u64>> {
+    let (head, tail) = warmup_sizes(length);
+    if length > head + tail {
+        Some(length - tail..length)
+    } else {
+        None
+    }
+}
+
+pub fn warmup_ranges(length: u64) -> Vec<Range<u64>> {
+    let Some(startup) = startup_range(length) else {
+        return Vec::new();
+    };
+    match metadata_prefetch_range(length) {
+        Some(metadata) => vec![startup, metadata],
+        None => vec![startup],
+    }
+}
+
+fn warmup_sizes(length: u64) -> (u64, u64) {
+    if length >= WARMUP_LARGE_THRESHOLD {
         (WARMUP_LARGE_HEAD_BYTES, WARMUP_LARGE_TAIL_BYTES)
     } else {
         (WARMUP_HEAD_BYTES, WARMUP_TAIL_BYTES)
-    };
-    if length <= head + tail {
-        return std::iter::once(0..length).collect();
     }
-    vec![0..head, length - tail..length]
 }

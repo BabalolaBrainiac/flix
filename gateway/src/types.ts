@@ -33,6 +33,14 @@ export interface SubtitleResolveRequest {
   episode?: number;
 }
 
+export interface CatalogSearchItem {
+  id: string;
+  name: string;
+  media_type: string;
+  release_info?: string;
+  is_anime: boolean;
+}
+
 export type SubtitleResolveResponse =
   | {
       status: 'matched';

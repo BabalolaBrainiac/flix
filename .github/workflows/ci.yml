@@ -14,7 +14,6 @@ jobs:
   rust-check:
     name: Rust Gates (fmt, clippy, test)
     runs-on: ubuntu-latest
-    if: github.event_name != 'push'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -53,7 +52,6 @@ jobs:
   web-check:
     name: Web Frontend Checks
     runs-on: ubuntu-latest
-    if: github.event_name != 'push'
     defaults:
       run:
         working-directory: web
@@ -83,7 +81,6 @@ jobs:
   gateway-check:
     name: Cloudflare Gateway Checks
     runs-on: ubuntu-latest
-    if: github.event_name != 'push'
     defaults:
       run:
         working-directory: gateway
@@ -109,6 +106,7 @@ jobs:
 
   build-packages:
     name: Build Packages
+    needs: [rust-check, web-check, gateway-check]
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
@@ -182,45 +180,3 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: dist/${{ matrix.artifact_name }}
           retention-days: 14
-
-  publish-rolling-release:
-    name: Publish Rolling Main Release
-    needs: [build-packages]
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download the built packages
-        uses: actions/download-artifact@v8
-        with:
-          path: release-artifacts
-          merge-multiple: true
-
-      - name: Generate SHA256 checksums
-        run: |
-          set -euo pipefail
-          cd release-artifacts
-          find . -type f -not -name 'SHA256SUMS.txt' -exec sha256sum {} + > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: Publish the rolling release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: latest-main
-          name: Latest main build
-          body: |
-            Automatic package build of the newest commit on main.
-
-            Commit: ${{ github.sha }}
-
-            These download links do not change after a merge:
-
-            - macOS: https://github.com/${{ github.repository }}/releases/download/latest-main/Flix-macOS-universal.dmg
-            - Windows: https://github.com/${{ github.repository }}/releases/download/latest-main/Flix-Windows-x64-Setup.exe
-          target_commitish: ${{ github.sha }}
-          draft: false
-          prerelease: true
-          make_latest: false
-          files: |
-            release-artifacts/**

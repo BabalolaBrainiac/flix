@@ -12,6 +12,33 @@ export interface SearchResponse {
   notes: string[];
 }
 
+export interface RecommendCommand {
+  keywords: string;
+  show?: boolean;
+  movie?: boolean;
+  anime?: boolean;
+  limit?: number;
+  min_rating?: number;
+  since_year?: number;
+}
+
+export interface RecommendItem {
+  id: string;
+  name: string;
+  media_type: string;
+  release_info: string | null;
+  poster: string | null;
+  genres: string[] | null;
+  imdb_rating: string | null;
+  description: string | null;
+  is_anime: boolean;
+  score: number;
+}
+
+export interface RecommendResponse {
+  items: RecommendItem[];
+}
+
 export interface EpisodeSummary {
   id: string;
   stream_id?: string;
@@ -167,4 +194,51 @@ export interface DiagnosticsReport {
   download_dir: string;
   data_dir: string;
   active_session: boolean;
+}
+
+export interface ReaderPublication {
+  id: string;
+  title: string;
+  description: string | null;
+  year: number | null;
+  status: string | null;
+  tags: string[];
+  cover_url: string | null;
+  source: string;
+}
+
+export interface ReaderChapter {
+  id: string;
+  chapter: string | null;
+  volume: string | null;
+  title: string | null;
+  language: string;
+  pages: number;
+  external_url: string | null;
+}
+
+export interface ReaderSearchResponse {
+  publications: ReaderPublication[];
+}
+
+export interface ReaderChaptersResponse {
+  chapters: ReaderChapter[];
+  available_languages: string[];
+}
+
+export interface ReaderPagesResponse {
+  chapter_id: string;
+  page_count: number;
+  pages: string[];
+}
+
+export interface ReaderProgress {
+  publication_id: string;
+  chapter_id: string;
+  page: number;
+  updated_at: string;
+}
+
+export interface ReaderProgressResponse {
+  position: ReaderProgress | null;
 }

@@ -12,10 +12,18 @@ pub async fn run(
     preferred_file_index: Option<usize>,
 ) -> Result<()> {
     println!("Adding torrent...");
-    let id = session.add(Source::parse(torrent)?).await?;
+    let source = Source::parse(torrent)?;
+    // Select the file at add time. A second file selection on a live torrent
+    // can deadlock inside librqbit.
+    let (id, preselected) = match preferred_file_index {
+        Some(file_index) => session.add_with_file(source, file_index).await?,
+        None => (session.add(source).await?, false),
+    };
     let files = session.files(id)?;
     let file = selected_file(&files, preferred_file_index)?;
-    session.select_files(id, &[file.index]).await?;
+    if crate::session::needs_file_selection(preferred_file_index, preselected, file.index) {
+        session.select_files(id, &[file.index]).await?;
+    }
     println!("Downloading: {}", file.name);
     println!("Destination: {}", download_dir.display());
 

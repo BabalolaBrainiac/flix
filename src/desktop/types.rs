@@ -2,6 +2,10 @@ use crate::playback::{MediaRef, PlaybackSnapshot};
 use crate::stremio::{CatalogItem, CatalogKind, Episode};
 use serde::{Deserialize, Serialize};
 
+fn default_reader_lang() -> String {
+    "en".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SearchCommand {
     pub query: String,
@@ -36,6 +40,46 @@ impl From<&CatalogItem> for CatalogItemSummary {
 pub struct SearchResponse {
     pub items: Vec<CatalogItemSummary>,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecommendCommand {
+    pub keywords: String,
+    #[serde(default)]
+    pub show: bool,
+    #[serde(default)]
+    pub movie: bool,
+    #[serde(default)]
+    pub anime: bool,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    #[serde(default)]
+    pub min_rating: Option<f64>,
+    #[serde(default)]
+    pub since_year: Option<u32>,
+}
+
+fn default_limit() -> usize {
+    20
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecommendItemSummary {
+    pub id: String,
+    pub name: String,
+    pub media_type: String,
+    pub release_info: Option<String>,
+    pub poster: Option<String>,
+    pub genres: Option<Vec<String>>,
+    pub imdb_rating: Option<String>,
+    pub description: Option<String>,
+    pub is_anime: bool,
+    pub score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecommendResponse {
+    pub items: Vec<RecommendItemSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,6 +130,8 @@ pub struct EpisodesResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StreamsCommand {
+    #[serde(default)]
+    pub is_anime: bool,
     #[serde(default)]
     pub media_type: Option<String>,
     pub stream_id: String,
@@ -253,4 +299,56 @@ pub struct DiagnosticsReport {
     pub download_dir: String,
     pub data_dir: String,
     pub active_session: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaderSearchCommand {
+    pub query: String,
+    #[serde(default = "default_reader_lang")]
+    pub lang: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaderSearchResponse {
+    pub publications: Vec<crate::reader::Publication>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaderChaptersCommand {
+    pub manga_id: String,
+    #[serde(default = "default_reader_lang")]
+    pub lang: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaderChaptersResponse {
+    pub chapters: Vec<crate::reader::Chapter>,
+    pub available_languages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaderPagesCommand {
+    pub chapter_id: String,
+    pub manga_id: String,
+    #[serde(default = "default_reader_lang")]
+    pub lang: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaderPagesResponse {
+    pub chapter_id: String,
+    pub page_count: usize,
+    pub pages: Vec<String>, // local /api/reader/page?... URLs
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaderProgressResponse {
+    pub position: Option<crate::reader::progress::ReadingPosition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaderProgressSaveCommand {
+    pub publication_id: String,
+    pub chapter_id: String,
+    pub page: usize,
 }

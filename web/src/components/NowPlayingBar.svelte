@@ -7,23 +7,28 @@
   export let onStateChange: () => void;
 
   let isStopping = false;
+  let controlError = '';
 
   async function handleStop() {
     isStopping = true;
+    controlError = '';
     try {
       await stopPlayback();
       onStateChange();
+    } catch (error) {
+      controlError = error instanceof Error ? error.message : 'Playback could not stop. Try again.';
     } finally {
       isStopping = false;
     }
   }
 
   async function handleNext() {
+    controlError = '';
     try {
       await nextEpisode();
       onStateChange();
-    } catch {
-      // Handled by snapshot event
+    } catch (error) {
+      controlError = error instanceof Error ? error.message : 'The next episode could not start.';
     }
   }
 
@@ -48,10 +53,13 @@
         {/if}
 
         <div class="text-block">
+          {#if controlError}
+            <span class="now-sub status-failed-msg" role="alert">{controlError}</span>
+          {/if}
           {#if snapshot.state === 'playing'}
             <span class="now-title">{snapshot.title}</span>
             <span class="now-sub">
-              Playing via {snapshot.player_name}{snapshot.subtitle_ready ? '' : ' · No subtitles'}
+              Open in {snapshot.player_name}{snapshot.subtitle_ready ? '' : ' · No subtitles'}
             </span>
           {:else if snapshot.state === 'resolving_source'}
             <span class="now-title">Resolving Source</span>

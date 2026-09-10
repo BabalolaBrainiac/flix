@@ -47,10 +47,13 @@ jobs:
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
-      - name: Checkout the release tag
+      # Checks out main, not the release tag: the QA tooling itself must be
+      # the latest version regardless of which historical release is being
+      # tested, since the published package is already built and immutable.
+      - name: Checkout the QA tooling
         uses: actions/checkout@v5
         with:
-          ref: ${{ env.TAG }}
+          ref: main
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -108,10 +111,13 @@ jobs:
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
-      - name: Checkout the release tag
+      # Checks out main, not the release tag: the QA tooling itself must be
+      # the latest version regardless of which historical release is being
+      # tested, since the published package is already built and immutable.
+      - name: Checkout the QA tooling
         uses: actions/checkout@v5
         with:
-          ref: ${{ env.TAG }}
+          ref: main
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master

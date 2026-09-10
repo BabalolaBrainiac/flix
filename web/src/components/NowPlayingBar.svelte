@@ -112,28 +112,32 @@
 <style>
   .now-playing-bar {
     position: fixed;
-    bottom: 16px;
+    bottom: 20px;
     left: 50%;
     transform: translateX(-50%);
-    width: calc(100% - 32px);
-    max-width: 960px;
+    width: calc(100% - 40px);
+    max-width: 980px;
     z-index: 100;
-    padding: 12px 20px;
+    padding: 14px 24px;
     border-radius: var(--radius-lg);
-    background: var(--bg-surface);
-    border: 1px solid var(--border-subtle);
-    /* A colored left edge shows the state at a glance. */
-    border-left: 3px solid var(--text-muted);
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
-    transition: border-left-color var(--transition-smooth);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
+    /* A colored left accent shows the state at a glance */
+    border-left: 4px solid var(--text-muted);
+    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.08);
+    transition: all var(--transition-smooth);
   }
 
   .now-playing-bar.is-busy {
     border-left-color: var(--accent-primary);
+    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.65), 0 0 20px var(--accent-glow);
   }
 
   .now-playing-bar.is-playing {
     border-left-color: var(--status-green);
+    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.65), 0 0 20px var(--status-green-glow);
   }
 
   .now-playing-bar.is-failed {
@@ -144,37 +148,46 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 16px;
   }
 
   .info-section {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 14px;
+    min-width: 0;
   }
 
   .text-block {
     display: flex;
     flex-direction: column;
+    min-width: 0;
   }
 
   .now-title {
-    font-size: 0.9rem;
+    font-size: 0.94rem;
     font-weight: 600;
     color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .now-sub {
-    font-size: 0.75rem;
-    color: var(--text-muted);
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-top: 2px;
   }
 
   :global(.status-busy) {
     color: var(--status-amber);
     animation: spin 1s linear infinite;
+    flex-shrink: 0;
   }
 
   :global(.status-failed) {
     color: var(--status-red);
+    flex-shrink: 0;
   }
 
   .status-failed-msg {
@@ -182,37 +195,62 @@
   }
 
   .status-dot-playing {
-    width: 8px;
-    height: 8px;
+    width: 9px;
+    height: 9px;
     border-radius: 50%;
     background: var(--status-green);
+    box-shadow: 0 0 10px var(--status-green);
+    animation: live-pulse 2s infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes live-pulse {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.45;
+      transform: scale(0.85);
+    }
   }
 
   .controls-section {
     display: flex;
-    gap: 8px;
+    gap: 10px;
+    flex-shrink: 0;
   }
 
   .control-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 12px;
-    background: var(--bg-surface-active);
+    padding: 7px 16px;
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
     color: var(--text-primary);
     border-radius: var(--radius-sm);
-    font-size: 0.8rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    transition: all var(--transition-fast);
+  }
+
+  .control-btn:hover:not(:disabled) {
+    background: var(--bg-surface-hover);
+    border-color: rgba(255, 255, 255, 0.15);
   }
 
   .btn-stop {
-    background: rgba(229, 9, 20, 0.15);
-    color: #f87171;
-    border: 1px solid rgba(229, 9, 20, 0.3);
+    background: rgba(229, 9, 20, 0.14);
+    color: #fca5a5;
+    border: 1px solid rgba(229, 9, 20, 0.35);
   }
 
   .btn-stop:hover:not(:disabled) {
     background: var(--accent-primary);
     color: #fff;
+    border-color: var(--accent-primary);
+    box-shadow: 0 2px 10px var(--accent-glow);
   }
 
   @keyframes spin {

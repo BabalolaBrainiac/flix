@@ -25,6 +25,7 @@ const SOURCE_ID_TTL: Duration = Duration::from_secs(15 * 60);
 const MAX_SOURCE_MAP_ENTRIES: usize = 512;
 const SUBTITLE_TIMEOUT: Duration = Duration::from_secs(25);
 const SUBTITLE_GRACE: Duration = Duration::from_secs(2);
+const ANIME_SUBTITLE_GRACE: Duration = Duration::from_secs(15);
 const BROWSER_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Clone, Debug)]
@@ -445,6 +446,7 @@ impl PlaybackCoordinator {
                 .as_ref()
                 .is_some_and(|queue| queue.subtitle_context(queue.current()).is_some())
             || media.is_anime();
+        let media = updated_media_for_session(&media, episode_queue.as_ref());
         let mut active = ActiveSession {
             target,
             browser_seen_at: None,
@@ -641,6 +643,7 @@ impl PlaybackCoordinator {
             active.quality = alternative.quality;
             let current_video = active.current_video().clone();
             sync_queue_with_video(&mut active.episode_queue, &current_video);
+            active.media = updated_media_for_session(&active.media, active.episode_queue.as_ref());
             if let Err(error) = active.session.remove(previous_torrent_id, true).await {
                 tracing::warn!("Could not remove an unresponsive torrent: {error:#}");
             }
@@ -777,13 +780,14 @@ impl PlaybackCoordinator {
                 let (reader, _) = request
                     .session
                     .open_stream(request.torrent_id, request.video.index)?;
-                if let Ok(Ok(tracks)) = tokio::time::timeout(
-                    Duration::from_secs(3),
-                    super::anime::parse_tracks(reader),
-                )
-                .await
+                if let Ok(Ok(tracks)) =
+                    tokio::time::timeout(Duration::from_secs(3), super::anime::parse_tracks(reader))
+                        .await
                 {
-                    let has_embedded_en = tracks.select(false).is_ok();
+                    let has_embedded_en = tracks
+                        .select(false)
+                        .map(|selected| selected.subtitle.is_some())
+                        .unwrap_or(false);
                     *tracks_slot.lock().await = Some(tracks);
                     if has_embedded_en {
                         return Ok::<_, anyhow::Error>(SubtitlePreparation::Ready(Vec::new()));
@@ -846,8 +850,13 @@ impl PlaybackCoordinator {
                 Err(_) => Vec::new(),
             }
         };
+        let subtitle_grace = if request.is_anime {
+            ANIME_SUBTITLE_GRACE
+        } else {
+            SUBTITLE_GRACE
+        };
         let (warmup_ready, subtitle_paths) =
-            match prepare_with_subtitles(warmup, subtitles, request.cancel_token, SUBTITLE_GRACE)
+            match prepare_with_subtitles(warmup, subtitles, request.cancel_token, subtitle_grace)
                 .await
             {
                 Ok((report, paths)) => {
@@ -868,12 +877,9 @@ impl PlaybackCoordinator {
                     let (reader, _) = request
                         .session
                         .open_stream(request.torrent_id, request.video.index)?;
-                    tokio::time::timeout(
-                        Duration::from_secs(3),
-                        super::anime::parse_tracks(reader),
-                    )
-                    .await
-                    .context("Anime language check timed out")??
+                    tokio::time::timeout(Duration::from_secs(3), super::anime::parse_tracks(reader))
+                        .await
+                        .context("Anime language check timed out")??
                 }
             };
             Some(tracks.select(!subtitle_paths.is_empty())?)
@@ -1345,5 +1351,11 @@ mod tests {
         assert_eq!(map.len(), MAX_SOURCE_MAP_ENTRIES);
         assert!(!map.contains_key("0"));
         assert!(map.contains_key(&MAX_SOURCE_MAP_ENTRIES.to_string()));
+    }
+
+    #[test]
+    fn anime_subtitle_grace_exceeds_default_grace() {
+        assert!(super::ANIME_SUBTITLE_GRACE > super::SUBTITLE_GRACE);
+        assert!(super::ANIME_SUBTITLE_GRACE >= Duration::from_secs(10));
     }
 }

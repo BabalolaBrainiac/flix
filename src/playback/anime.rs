@@ -52,7 +52,7 @@ pub async fn inspect(
     parse_tracks(reader).await?.select(external_english)
 }
 
-fn select_tracks(tracks: &[Track], external_english: bool) -> Result<SelectedTracks> {
+fn select_tracks(tracks: &[Track], _external_english: bool) -> Result<SelectedTracks> {
     let audio: Vec<_> = tracks.iter().filter(|track| track.kind == 2).collect();
     let usable =
         |track: &&Track| !track.disabled && !track.commentary && !track.name.contains("commentary");
@@ -66,7 +66,8 @@ fn select_tracks(tracks: &[Track], external_english: bool) -> Result<SelectedTra
                     && matches!(primary_language(&track.language), "ja" | "jpn" | "japanese")
             })
         })
-        .context("Anime original audio is unavailable. Select another source.")?;
+        .or_else(|| audio.iter().position(usable))
+        .context("No usable audio track is available. Select another source.")?;
     let subtitle = tracks
         .iter()
         .filter(|track| track.kind == 17)
@@ -78,9 +79,6 @@ fn select_tracks(tracks: &[Track], external_english: bool) -> Result<SelectedTra
                 && !track.name.contains("sign")
                 && !track.name.contains("song")
         });
-    if subtitle.is_none() && !external_english {
-        bail!("Anime English subtitles are unavailable. Select another source.");
-    }
     Ok(SelectedTracks { audio, subtitle })
 }
 
@@ -290,10 +288,23 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dubs_unknown_audio_and_missing_english_subtitles() {
-        assert!(select_tracks(&[track(2, "eng", "")], true).is_err());
-        assert!(select_tracks(&[track(2, "", "")], true).is_err());
-        assert!(select_tracks(&[track(2, "jpn", ""), track(17, "spa", "")], false).is_err());
+    fn falls_back_to_original_audio_when_subtitles_are_unavailable() {
+        let selected = select_tracks(&[track(2, "jpn", ""), track(17, "spa", "")], false).unwrap();
+        assert_eq!(selected.audio, 0);
+        assert_eq!(selected.subtitle, None);
+    }
+
+    #[test]
+    fn falls_back_to_usable_audio_when_language_tag_is_missing() {
+        let selected = select_tracks(&[track(2, "", "")], false).unwrap();
+        assert_eq!(selected.audio, 0);
+        assert_eq!(selected.subtitle, None);
+    }
+
+    #[test]
+    fn rejects_streams_without_audio_tracks() {
+        assert!(select_tracks(&[], false).is_err());
+        assert!(select_tracks(&[track(17, "eng", "")], false).is_err());
     }
 
     #[test]

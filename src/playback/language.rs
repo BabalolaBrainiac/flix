@@ -18,13 +18,7 @@ impl LanguagePolicy {
     }
     /// Creates the standard playback policy.
     ///
-    /// Audio: prefer English, then fall back to the file's default track. This
-    /// keeps English content in English and lets an original-language-only file,
-    /// such as anime with Japanese audio, fall back to that track instead of a
-    /// dub the release happened to order first. `FLIX_AUDIO_LANGUAGE` overrides
-    /// the audio preference, for example `jpn,ja` to force Japanese.
-    ///
-    /// Subtitles: prefer English.
+    /// Audio: prefer English, then fall back to original audio and the file's default track.
     pub fn standard() -> Self {
         let audio_override = std::env::var("FLIX_AUDIO_LANGUAGE").ok().and_then(|value| {
             let parsed: Vec<String> = value
@@ -40,9 +34,11 @@ impl LanguagePolicy {
         });
 
         let english: Vec<String> = PREFERRED_LANGUAGES.iter().map(|&s| s.to_string()).collect();
+        let mut default_audio = english.clone();
+        default_audio.push("original".to_string());
 
         Self {
-            audio_languages: audio_override.unwrap_or_else(|| english.clone()),
+            audio_languages: audio_override.unwrap_or(default_audio),
             subtitle_languages: english,
         }
     }

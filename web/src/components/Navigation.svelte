@@ -87,15 +87,18 @@
     position: sticky;
     top: 0;
     z-index: 50;
-    background: var(--bg-primary);
-    border-bottom: 1px solid var(--border-subtle);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-bottom: 1px solid var(--glass-border);
+    transition: background-color var(--transition-fast);
   }
 
   .nav-container {
-    max-width: 1280px;
+    max-width: 1320px;
     margin: 0 auto;
-    padding: 0 24px;
-    height: 64px;
+    padding: 0 28px;
+    height: 68px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -104,8 +107,12 @@
   .brand {
     display: flex;
     align-items: center;
+    gap: 10px;
     background: transparent;
     cursor: pointer;
+    text-decoration: none;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
   }
 
   .brand-text {
@@ -115,61 +122,84 @@
   }
 
   .brand-name {
-    font-size: 1.2rem;
+    font-size: 1.35rem;
     font-weight: 800;
-    letter-spacing: 0.05em;
-    color: var(--accent-primary);
+    letter-spacing: 0.08em;
+    background: linear-gradient(135deg, #ff1e27 0%, #e50914 50%, #b8050e 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 24px rgba(229, 9, 20, 0.3);
   }
 
   .brand-sub {
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     font-weight: 700;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.16em;
     color: var(--text-muted);
+    padding: 2px 6px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
   }
 
   .nav-tabs {
     display: flex;
     gap: 4px;
-    background: var(--bg-secondary);
+    background: rgba(18, 20, 25, 0.75);
     padding: 4px;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-full);
     border: 1px solid var(--border-subtle);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
   }
 
   .nav-tab {
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 14px;
-    border-radius: var(--radius-sm);
+    gap: 7px;
+    padding: 7px 16px;
+    border-radius: var(--radius-full);
     background: transparent;
     color: var(--text-secondary);
-    font-size: 0.85rem;
+    font-size: 0.84rem;
     font-weight: 500;
+    transition: all var(--transition-fast);
   }
 
   .nav-tab:hover {
     color: var(--text-primary);
-    background: var(--bg-surface);
+    background: rgba(255, 255, 255, 0.05);
   }
 
   .nav-tab.active {
-    background: var(--bg-surface-active);
+    background: rgba(255, 255, 255, 0.12);
     color: var(--text-primary);
-    box-shadow: inset 0 -2px 0 var(--accent-primary);
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.12);
   }
 
   .live-dot {
-    width: 6px;
-    height: 6px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     background: var(--status-green);
+    box-shadow: 0 0 8px var(--status-green);
+    animation: live-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes live-pulse {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.4;
+      transform: scale(0.85);
+    }
   }
 
   .nav-tab:focus-visible, .brand:focus-visible {
-    outline: 2px solid var(--text-primary);
+    outline: 2px solid var(--border-focus);
     outline-offset: 2px;
   }
 
@@ -183,7 +213,7 @@
       padding: 14px 16px 10px;
     }
     .brand { align-self: flex-start; }
-    .nav-tabs { min-width: 0; overflow-x: auto; }
-    .nav-tab { padding: 8px 12px; }
+    .nav-tabs { min-width: 0; overflow-x: auto; border-radius: var(--radius-md); }
+    .nav-tab { padding: 8px 14px; border-radius: var(--radius-sm); }
   }
 </style>

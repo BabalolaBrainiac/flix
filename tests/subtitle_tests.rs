@@ -64,17 +64,22 @@ fn players_prefer_english_audio_and_subtitles() {
 
     let options =
         PlaybackOptions::new("Episode".to_string(), 1_000_000_000).with_standard_languages();
-    assert_eq!(options.audio_languages, vec!["eng", "en", "english"]);
+    assert_eq!(
+        options.audio_languages,
+        vec!["eng", "en", "english", "original"]
+    );
     assert_eq!(options.subtitle_languages, vec!["eng", "en", "english"]);
 
     let mpv = player_args(PlayerKind::Mpv, &options);
-    assert!(mpv.iter().any(|arg| arg == "--alang=eng,en,english"));
+    assert!(mpv
+        .iter()
+        .any(|arg| arg == "--alang=eng,en,english,original"));
     assert!(mpv.iter().any(|arg| arg == "--slang=eng,en,english"));
 
     let vlc = player_args(PlayerKind::Vlc, &options);
     assert!(vlc
         .iter()
-        .any(|arg| arg == "--audio-language=eng,en,english"));
+        .any(|arg| arg == "--audio-language=eng,en,english,original"));
     assert!(vlc.iter().any(|arg| arg == "--sub-language=eng,en,english"));
 }
 

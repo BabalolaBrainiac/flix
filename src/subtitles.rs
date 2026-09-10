@@ -176,7 +176,30 @@ pub async fn resolve_gateway_english_subtitle(
     info_hash: &str,
     file_index: usize,
 ) -> Result<Option<PathBuf>> {
-    let Some(request) = GatewaySubtitleLookup::from_media(media) else {
+    let mut lookup = GatewaySubtitleLookup::from_media(media);
+    if lookup.is_none() {
+        let catalog_id = match media {
+            MediaRef::Movie { catalog_id, .. } | MediaRef::Episode { catalog_id, .. } => {
+                catalog_id.as_str()
+            }
+        };
+        if catalog_id.starts_with("kitsu:") {
+            if let Some(imdb_id) = resolve_kitsu_imdb_id(catalog_id).await {
+                let (season, episode) = match media {
+                    MediaRef::Movie { .. } => (None, None),
+                    MediaRef::Episode {
+                        season, episode, ..
+                    } => (Some(*season), Some(*episode)),
+                };
+                lookup = Some(GatewaySubtitleLookup {
+                    imdb_id,
+                    season,
+                    episode,
+                });
+            }
+        }
+    }
+    let Some(request) = lookup else {
         return Ok(None);
     };
     let Some(device_token) = crate::desktop::credentials::get_device_token()? else {
@@ -262,11 +285,47 @@ pub async fn resolve_gateway_english_subtitle(
     Ok(Some(destination))
 }
 
-struct OpenSubtitlesClient {
-    client: reqwest::Client,
-    api_key: String,
-    user_agent: String,
-    subtitle_dir: PathBuf,
+fn extract_imdb_id(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if let Some(pos) = trimmed.find("tt") {
+        let candidate = &trimmed[pos..];
+        let digits: String = candidate
+            .chars()
+            .skip(2)
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if digits.len() >= 5 {
+            return Some(format!("tt{digits}"));
+        }
+    }
+    None
+}
+
+async fn resolve_kitsu_imdb_id(kitsu_id: &str) -> Option<String> {
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .timeout(Duration::from_secs(4))
+        .build()
+        .ok()?;
+    for media_type in ["series", "anime", "movie"] {
+        let url = format!("https://anime-kitsu.strem.fun/meta/{media_type}/{kitsu_id}.json");
+        if let Ok(response) = client.get(&url).send().await {
+            if response.status().is_success() {
+                if let Ok(value) = response.json::<serde_json::Value>().await {
+                    if let Some(id) = value
+                        .get("meta")
+                        .and_then(|m| m.get("imdb_id"))
+                        .and_then(|i| i.as_str())
+                    {
+                        if let Some(extracted) = extract_imdb_id(id) {
+                            return Some(extracted);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 #[derive(Serialize)]
@@ -281,22 +340,29 @@ struct GatewaySubtitleLookup {
 impl GatewaySubtitleLookup {
     fn from_media(media: &MediaRef) -> Option<Self> {
         match media {
-            MediaRef::Movie { catalog_id, .. } => Some(Self {
-                imdb_id: catalog_id.clone(),
-                season: None,
-                episode: None,
-            }),
+            MediaRef::Movie { catalog_id, .. } => {
+                let imdb_id = extract_imdb_id(catalog_id)?;
+                Some(Self {
+                    imdb_id,
+                    season: None,
+                    episode: None,
+                })
+            }
             MediaRef::Episode {
                 imdb_id,
                 stream_id,
                 season,
                 episode,
                 ..
-            } => Some(Self {
-                imdb_id: imdb_id.clone().unwrap_or_else(|| stream_id.clone()),
-                season: Some(*season),
-                episode: Some(*episode),
-            }),
+            } => {
+                let raw_id = imdb_id.as_deref().unwrap_or(stream_id);
+                let imdb_id = extract_imdb_id(raw_id)?;
+                Some(Self {
+                    imdb_id,
+                    season: Some(*season),
+                    episode: Some(*episode),
+                })
+            }
         }
     }
 }
@@ -315,6 +381,13 @@ enum GatewayResolveResponse {
         #[serde(rename = "reason")]
         _reason: String,
     },
+}
+
+struct OpenSubtitlesClient {
+    client: reqwest::Client,
+    api_key: String,
+    user_agent: String,
+    subtitle_dir: PathBuf,
 }
 
 impl OpenSubtitlesClient {
@@ -666,4 +739,37 @@ fn sanitize_label(value: &str) -> String {
 
 fn gateway_base_url() -> Option<String> {
     Some(crate::desktop::gateway::resolve_base_url())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_imdb_id_from_raw_identifiers() {
+        assert_eq!(extract_imdb_id("tt7124066"), Some("tt7124066".to_string()));
+        assert_eq!(
+            extract_imdb_id("tt7124066:1:7"),
+            Some("tt7124066".to_string())
+        );
+        assert_eq!(extract_imdb_id("tt0111161"), Some("tt0111161".to_string()));
+        assert_eq!(extract_imdb_id("kitsu:13274"), None);
+        assert_eq!(extract_imdb_id("invalid"), None);
+    }
+
+    #[test]
+    fn gateway_lookup_extracts_clean_imdb_id_from_episode_media() {
+        let media = MediaRef::Episode {
+            catalog_id: "kitsu:13274".to_string(),
+            stream_id: "tt7124066:1:7".to_string(),
+            imdb_id: None,
+            season: 1,
+            episode: 7,
+            title: Some("New & Old".to_string()),
+        };
+        let lookup = GatewaySubtitleLookup::from_media(&media).unwrap();
+        assert_eq!(lookup.imdb_id, "tt7124066");
+        assert_eq!(lookup.season, Some(1));
+        assert_eq!(lookup.episode, Some(7));
+    }
 }

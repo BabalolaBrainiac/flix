@@ -56,6 +56,11 @@ The `web/dist` directory holds build output, so Git ignores its contents. A new 
 
 The web app opens automatically in your default browser. It can search Stremio catalogs, browse episodes, pick torrent streams, and launch your local media player. Poster images, quality badges, and seed counts help you choose a stream.
 
+Search results appear as each catalog responds. You can open results while other catalogs load. A new search cancels older browser requests.
+Flix caches successful catalog and metadata responses in memory for five minutes. The cache holds at most 64 responses and 8 MiB.
+If Anime Kitsu fails or takes more than six seconds, Flix checks matching general catalog results for anime metadata.
+This fallback checks at most 16 titles. Provider failures remain visible in the search view.
+
 Use these options:
 
 - `--no-open`: Start the server, but do not open the browser.
@@ -66,9 +71,23 @@ The desktop server binds only to `127.0.0.1`. Every API request requires a token
 
 Merging to `main` runs checks and builds installer artifacts. It does not publish a GitHub release. Publication requires the separate manual **Release** workflow.
 
+### Release 0.2.0
+
+This release includes faster search results, original anime audio with English subtitles, playback cleanup, debug reports, and the browser player preview.
+The browser preview supports MP4, M4V, and WebM. Anime and MKV still require VLC or mpv.
+
+The unsigned installers are `Flix-macOS-universal.dmg` and `Flix-Windows-x64-Setup.exe`.
+The macOS installer supports Apple silicon and Intel Macs. The Windows installer targets x64 systems.
+Installer packages contain the application. They do not contain activation keys, user files, or playback caches.
+
+The maintainer tests the macOS installer with a fresh activation before distribution.
+After package checks pass, run the manual **Release** workflow with version `v0.2.0` and the full commit SHA from `main`.
+The workflow checks the source, builds both installers, and publishes the files with `SHA256SUMS.txt`.
+Users can download the installers from the [GitHub releases page](https://github.com/BabalolaBrainiac/flix/releases).
+
 ### Install a packaged build on macOS
 
-The macOS DMG from the release page is not signed with an Apple Developer ID, so macOS blocks the first launch with a message like "Apple could not verify Flix is free of malware". This is expected for an unsigned app. The application is safe to run; macOS only refuses to launch it automatically.
+The macOS DMG is not signed with an Apple Developer ID. macOS can block its first launch because it cannot verify the publisher.
 
 Open it once with either method:
 
@@ -80,6 +99,12 @@ Open it once with either method:
    ```
 
 A locally built binary does not show this message, because only files downloaded through a browser get the quarantine flag.
+
+### Install a packaged build on Windows
+
+Run `Flix-Windows-x64-Setup.exe` and follow the installer steps. Windows can show an unknown publisher warning because the installer is unsigned.
+Open Flix from the Start menu. Enter your invite code when the activation page opens.
+Use VLC or mpv for anime and formats that the browser preview does not support.
 
 ## Gateway
 
@@ -240,6 +265,39 @@ Do not place the key in the repository. Flix works without this key. Missing sco
 
 Letterboxd metadata is optional. Flix reads public JSON-LD data when it adds a new library entry. A Letterboxd error does not stop the torrent.
 
+## Browser player preview
+
+Select a source, then choose **Browser preview** under **Play with**. MP4, M4V, and WebM files can play inside Flix without VLC.
+
+The browser must support the video and audio codecs in the file. Flix sends the original encoded bytes without conversion. Browser and display capabilities still affect playback.
+
+Use the video controls for seeking, volume, and fullscreen. The buttons below the video provide pause, resume, and ten-second jumps. Next episode appears when available.
+
+Flix reports playback from browser events. If the browser blocks automatic playback, select **Play**. Reloading the page restores the latest reported position.
+
+The player stays open when you change Flix tabs. Stop, playback end, and media errors release the session. Three minutes without browser updates also trigger cleanup.
+
+Flix converts available external English SRT subtitles to WebVTT in memory. Stream URLs apply only to the selected file. Changing episodes invalidates old URLs.
+
+MKV playback and verified anime track selection still require an external player. The browser preview rejects anime playback to preserve the language requirement.
+
+Styled subtitles, wider codec support, and timed intro skipping remain in [issue #7](https://github.com/BabalolaBrainiac/flix/issues/7). This preview does not add intro skip buttons.
+
+### Browser playback check
+
+Install FFmpeg and the web development dependencies. Install the Chromium test browser once:
+
+```sh
+npm --prefix web ci
+cd web
+npx playwright install chromium
+npm run test:browser
+```
+
+The check builds the web app and generates a short sample video. It starts a local Rust test host and checks decoded frames, subtitles, controls, and cleanup.
+
+Set `FLIX_TEST_CHROME` to use an existing Chromium executable. The check removes its temporary media and control file when it finishes.
+
 ## Recommendations and manga
 
 Open **Discover** for recommendations. Open **Reader** to search MangaDex, select a chapter, and save your reading position.
@@ -259,6 +317,10 @@ CBZ exports store chapter images in a ZIP archive. Reader queries currently insp
 ## Anime audio and subtitles
 
 Anime search removes sources that explicitly offer only dubbed audio. Dual audio sources remain eligible for a track check.
+
+The web app also checks general catalog metadata before selecting sources. Japanese animation receives the anime language rule, including IMDb results.
+Flix keeps the original provider and episode identifiers for these results.
+Debug reports include search duration and verified track indices. They exclude search text, media names, and media URLs.
 
 The CLI and web app check MKV track labels before anime playback. Flix selects a track marked as original. Otherwise, it selects Japanese audio.
 

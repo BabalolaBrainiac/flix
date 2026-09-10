@@ -50,6 +50,7 @@ export interface EpisodeSummary {
 
 export interface EpisodesResponse {
   episodes: EpisodeSummary[];
+  is_anime?: boolean;
 }
 
 export interface StreamSummary {
@@ -65,6 +66,7 @@ export interface StreamSummary {
 
 export interface StreamsResponse {
   streams: StreamSummary[];
+  is_anime?: boolean;
 }
 
 export interface PlaySource {
@@ -98,6 +100,7 @@ export interface MediaRefEpisode {
 export type MediaRef = MediaRefMovie | MediaRefEpisode;
 
 export interface PlayCommand {
+  target?: 'external' | 'browser';
   source_id?: string;
   magnet?: string;
   file_index?: number;
@@ -112,7 +115,23 @@ export interface SafeError {
   retryable: boolean;
 }
 
+export type BrowserEvent = 'playing' | 'paused' | 'buffering' | 'heartbeat' | 'ended' | 'failed' | 'stop';
+export interface BrowserPlayback {
+  state: 'browser';
+  media: MediaRef;
+  title: string;
+  quality: string;
+  playback_id: string;
+  stream_url: string;
+  mime_type: string;
+  subtitle_url: string | null;
+  phase: 'ready' | 'playing' | 'paused' | 'buffering';
+  position_ms: number;
+  has_next: boolean;
+}
+
 export type PlaybackSnapshot =
+  | BrowserPlayback
   | { state: 'idle' }
   | { state: 'resolving_source'; media: MediaRef }
   | { state: 'loading_torrent'; media: MediaRef; quality: string }

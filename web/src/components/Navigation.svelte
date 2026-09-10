@@ -6,7 +6,7 @@
   export let playbackState: PlaybackSnapshot = { state: 'idle' };
   export let onSelectTab: (tab: 'search' | 'discover' | 'continue' | 'downloads' | 'reader' | 'settings' | 'diagnostics') => void;
 
-  $: isPlaying = playbackState.state === 'playing';
+  $: isPlaying = playbackState.state === 'playing' || (playbackState.state === 'browser' && playbackState.phase === 'playing');
 </script>
 
 <header class="nav-header">

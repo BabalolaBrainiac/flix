@@ -11,6 +11,8 @@ pub struct SearchCommand {
     pub query: String,
     #[serde(default)]
     pub anime_only: bool,
+    #[serde(default)]
+    pub catalog: Option<crate::stremio::SearchCatalog>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,7 +33,12 @@ impl From<&CatalogItem> for CatalogItemSummary {
             media_type: item.media_type.clone(),
             release_info: item.release_info.clone(),
             poster: item.poster.clone(),
-            is_anime: item.kind == CatalogKind::AnimeKitsu,
+            is_anime: item.kind == CatalogKind::AnimeKitsu
+                || item.genres.as_ref().is_some_and(|genres| {
+                    genres
+                        .iter()
+                        .any(|genre| genre.eq_ignore_ascii_case("anime"))
+                }),
         }
     }
 }
@@ -126,6 +133,7 @@ impl From<&Episode> for EpisodeSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EpisodesResponse {
     pub episodes: Vec<EpisodeSummary>,
+    pub is_anime: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -152,6 +160,7 @@ pub struct StreamSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StreamsResponse {
     pub streams: Vec<StreamSummary>,
+    pub is_anime: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,6 +179,8 @@ pub struct EpisodeQueueSeed {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlayCommand {
+    #[serde(default)]
+    pub target: crate::playback::types::PlaybackTarget,
     #[serde(default)]
     pub source_id: Option<String>,
     #[serde(default)]

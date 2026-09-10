@@ -45,7 +45,18 @@ impl DesktopService {
 
     pub async fn search(&self, command: &SearchCommand) -> Result<SearchResponse> {
         let client = self.get_stremio_client()?;
-        commands::handle_search(client, command).await
+        let started = std::time::Instant::now();
+        let response = commands::handle_search(client, command).await;
+        self.coordinator
+            .record_debug_details(crate::desktop::debug_report::DebugDetails::Search {
+                catalog: command.catalog,
+                duration_ms: started.elapsed().as_millis() as u64,
+                items: response.as_ref().map_or(0, |response| response.items.len()),
+                failed: response
+                    .as_ref()
+                    .map_or(true, |response| !response.notes.is_empty()),
+            });
+        response
     }
 
     pub async fn recommend(&self, command: &RecommendCommand) -> Result<RecommendResponse> {
@@ -165,7 +176,7 @@ impl DesktopService {
 
         let res = self
             .coordinator
-            .start_playback(media, source, command.queue_seed)
+            .start_playback_on(media, source, command.queue_seed, command.target)
             .await;
         Ok(res)
     }

@@ -282,8 +282,14 @@ impl TorrentSession {
 
         for (index, file_info) in metadata.file_infos.iter().enumerate() {
             let name = file_info.relative_filename.to_string_lossy().into_owned();
-            let is_video =
-                name.ends_with(".mp4") || name.ends_with(".mkv") || name.ends_with(".avi");
+            let extension = Path::new(&name)
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(str::to_ascii_lowercase);
+            let is_video = matches!(
+                extension.as_deref(),
+                Some("mp4" | "m4v" | "webm" | "mkv" | "avi")
+            );
             files.push(TorrentFile {
                 index,
                 name,

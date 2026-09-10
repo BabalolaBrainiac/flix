@@ -35,7 +35,7 @@
   $: isBusy = snapshot.state !== 'idle' && snapshot.state !== 'playing' && snapshot.state !== 'failed' && snapshot.state !== 'stopping';
 </script>
 
-{#if snapshot.state !== 'idle'}
+{#if snapshot.state !== 'idle' && snapshot.state !== 'browser'}
   <aside
     class="now-playing-bar panel"
     class:is-playing={snapshot.state === 'playing'}

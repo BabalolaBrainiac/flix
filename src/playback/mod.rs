@@ -1,4 +1,5 @@
 pub mod anime;
+mod browser;
 pub mod coordinator;
 pub mod language;
 mod preparation;

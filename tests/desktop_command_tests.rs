@@ -13,6 +13,7 @@ fn serializes_and_deserializes_desktop_commands() {
     let search = SearchCommand {
         query: "Loki".to_string(),
         anime_only: false,
+        catalog: None,
     };
     let json = serde_json::to_string(&search).unwrap();
     let parsed: SearchCommand = serde_json::from_str(&json).unwrap();
@@ -42,6 +43,7 @@ async fn rejects_empty_search_query() {
     let command = SearchCommand {
         query: "   ".to_string(),
         anime_only: false,
+        catalog: None,
     };
     let result = handle_search(&client, &command).await;
     assert!(result.is_err());

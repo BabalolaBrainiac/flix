@@ -2,6 +2,7 @@ use super::preparation::{first_subtitle, prepare_with_subtitles};
 use crate::config::{Config, PlaybackCache};
 use crate::episode_queue::EpisodeQueue;
 use crate::media;
+use crate::playback::types::{BrowserEvent, BrowserEventCommand, BrowserPhase, PlaybackTarget};
 use crate::playback::types::{MediaRef, OperationAccepted, PlaybackSnapshot, SafeError};
 use crate::player::{self, ManagedPlayer, PlaybackOptions};
 use crate::session::{Source, TorrentFile, TorrentId, TorrentSession};
@@ -24,6 +25,7 @@ const SOURCE_ID_TTL: Duration = Duration::from_secs(15 * 60);
 const MAX_SOURCE_MAP_ENTRIES: usize = 512;
 const SUBTITLE_TIMEOUT: Duration = Duration::from_secs(25);
 const SUBTITLE_GRACE: Duration = Duration::from_secs(2);
+const BROWSER_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Clone, Debug)]
 pub struct ResolvedSource {
@@ -47,6 +49,8 @@ struct SourceMapEntry {
 }
 
 pub struct ActiveSession {
+    pub target: PlaybackTarget,
+    browser_seen_at: Option<Instant>,
     pub is_anime: bool,
     pub media: MediaRef,
     pub server: ServerHandle,
@@ -116,6 +120,10 @@ impl PlaybackCoordinator {
 
     pub fn debug_report(&self) -> crate::desktop::debug_report::DebugReport {
         self.debug_log.export()
+    }
+
+    pub fn record_debug_details(&self, details: crate::desktop::debug_report::DebugDetails) {
+        self.debug_log.record_details(details);
     }
 
     pub fn subscribe(&self) -> watch::Receiver<PlaybackSnapshot> {
@@ -224,6 +232,17 @@ impl PlaybackCoordinator {
         source: ResolvedSource,
         episode_queue_seed: Option<crate::desktop::types::EpisodeQueueSeed>,
     ) -> OperationAccepted {
+        self.start_playback_on(media, source, episode_queue_seed, PlaybackTarget::External)
+            .await
+    }
+
+    pub async fn start_playback_on(
+        self: &Arc<Self>,
+        media: MediaRef,
+        source: ResolvedSource,
+        episode_queue_seed: Option<crate::desktop::types::EpisodeQueueSeed>,
+        target: PlaybackTarget,
+    ) -> OperationAccepted {
         let _control = self.control_lock.lock().await;
         let operation_id = Uuid::new_v4().to_string();
         let cancel_token = self.reset_cancellation_token().await;
@@ -239,7 +258,7 @@ impl PlaybackCoordinator {
             let result = tokio::select! {
                 biased;
                 _ = cancel_token.cancelled() => Err(anyhow!("Operation cancelled")),
-                result = coordinator.run_playback_pipeline(media, source, episode_queue_seed, cancel_token.clone()) => result,
+                result = coordinator.run_playback_pipeline(media, source, episode_queue_seed, target, cancel_token.clone()) => result,
             };
             coordinator.finish_background_operation(result).await;
             coordinator.monitor_player().await;
@@ -309,6 +328,24 @@ impl PlaybackCoordinator {
                 };
                 let (exit, player_name) = {
                     let mut session = active.lock().await;
+                    if session.target == PlaybackTarget::Browser {
+                        if session
+                            .browser_seen_at
+                            .is_some_and(|seen| seen.elapsed() >= BROWSER_TIMEOUT)
+                        {
+                            drop(session);
+                            coordinator.close_active_playback().await;
+                            coordinator.set_snapshot(PlaybackSnapshot::Failed {
+                                error: SafeError::new(
+                                    "BROWSER_DISCONNECTED",
+                                    "The browser stopped responding. Start playback again.",
+                                    true,
+                                ),
+                            });
+                            return;
+                        }
+                        continue;
+                    }
                     let exit = match session.player.as_mut() {
                         Some(player) => player.poll_exit(),
                         None => return,
@@ -349,10 +386,21 @@ impl PlaybackCoordinator {
         media: MediaRef,
         source: ResolvedSource,
         episode_queue_seed: Option<crate::desktop::types::EpisodeQueueSeed>,
+        target: PlaybackTarget,
         cancel_token: CancellationToken,
     ) -> Result<()> {
         if cancel_token.is_cancelled() {
             return Ok(());
+        }
+
+        if target == PlaybackTarget::Browser
+            && (source.is_anime
+                || media.is_anime()
+                || episode_queue_seed
+                    .as_ref()
+                    .is_some_and(|seed| seed.catalog_item.is_anime))
+        {
+            super::browser::mime_type("", true)?;
         }
 
         self.set_snapshot(PlaybackSnapshot::LoadingTorrent {
@@ -398,6 +446,8 @@ impl PlaybackCoordinator {
                 .is_some_and(|queue| queue.subtitle_context(queue.current()).is_some())
             || media.is_anime();
         let mut active = ActiveSession {
+            target,
+            browser_seen_at: None,
             is_anime,
             media,
             cache,
@@ -431,6 +481,7 @@ impl PlaybackCoordinator {
             .cloned()
             .context("There is no active playback session")?;
         let mut active = active.lock().await;
+        active.server.clear_browser_media().await;
 
         if active.has_next_video() {
             stop_active_player(&mut active);
@@ -536,16 +587,29 @@ impl PlaybackCoordinator {
             return Ok(());
         }
 
-        let selected_player = player::detect()
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("No supported media player is available"))?;
+        let selected_player = if active.target == PlaybackTarget::External {
+            Some(
+                player::detect()
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow!("No supported media player is available"))?,
+            )
+        } else {
+            None
+        };
         let mut prepared = self.prepare_active_video(active, &cancel_token).await;
 
         while prepared
             .as_ref()
             .map_or(true, |prepared| !prepared.warmup_ready)
         {
+            if prepared
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.is::<super::browser::BrowserUnsupported>())
+            {
+                return Err(prepared.err().unwrap());
+            }
             let Some(alternative) = alternatives.first().cloned() else {
                 return Err(prepared.err().unwrap_or_else(|| {
                     anyhow!("No listed source buffered in time. Try another source.")
@@ -588,6 +652,44 @@ impl PlaybackCoordinator {
         }
 
         let prepared = prepared?;
+        self.record_debug_details(crate::desktop::debug_report::DebugDetails::Languages {
+            anime: active.is_anime,
+            audio_index: prepared.selected_tracks.as_ref().map(|tracks| tracks.audio),
+            subtitle_index: prepared
+                .selected_tracks
+                .as_ref()
+                .and_then(|tracks| tracks.subtitle),
+            external_english: !prepared.subtitle_files.is_empty(),
+        });
+        let has_next = active.has_next_video()
+            || active
+                .episode_queue
+                .as_ref()
+                .is_some_and(EpisodeQueue::has_next);
+        if active.target == PlaybackTarget::Browser {
+            let mime_type =
+                super::browser::mime_type(&active.current_video().name, active.is_anime)?;
+            let subtitle = super::browser::prepare_subtitle(&prepared.subtitle_files).await;
+            let (stream_url, subtitle_url) = active
+                .server
+                .browser_media(active.torrent_id, active.current_video().index, subtitle)
+                .await;
+            active.browser_seen_at = Some(Instant::now());
+            self.set_snapshot(PlaybackSnapshot::Browser {
+                media: active.media.clone(),
+                title: active.media.display_title(),
+                quality: active.quality.clone(),
+                playback_id: Uuid::new_v4().to_string(),
+                stream_url,
+                mime_type: mime_type.to_string(),
+                subtitle_url,
+                phase: BrowserPhase::Ready,
+                position_ms: 0,
+                has_next,
+            });
+            return Ok(());
+        }
+        let selected_player = selected_player.context("No supported media player is available")?;
         let media = active.media.clone();
         let quality = active.quality.clone();
         let player_name = selected_player.kind_label().to_string();
@@ -609,12 +711,6 @@ impl PlaybackCoordinator {
             }
             return Err(error);
         }
-        let has_next = active.has_next_video()
-            || active
-                .episode_queue
-                .as_ref()
-                .is_some_and(EpisodeQueue::has_next);
-
         active.player = Some(managed_player);
         active.player_name = Some(player_name.clone());
 
@@ -641,6 +737,9 @@ impl PlaybackCoordinator {
         cancel_token: &CancellationToken,
     ) -> Result<PreparedPlayback> {
         let video = active.current_video().clone();
+        if active.target == PlaybackTarget::Browser {
+            super::browser::mime_type(&video.name, active.is_anime)?;
+        }
         let subtitle_context = current_subtitle_context(active.episode_queue.as_ref());
         self.prepare_video(PrepareVideoRequest {
             is_anime: active.is_anime,
@@ -792,6 +891,61 @@ impl PlaybackCoordinator {
         let new_token = CancellationToken::new();
         *cancel_guard = new_token.clone();
         new_token
+    }
+
+    pub async fn browser_event(&self, command: BrowserEventCommand) -> Result<()> {
+        let _control = self.control_lock.lock().await;
+        let _operation = self
+            .operation_lock
+            .try_lock()
+            .map_err(|_| anyhow!("A playback transition is in progress"))?;
+        let mut snapshot = self.snapshot();
+        let PlaybackSnapshot::Browser {
+            playback_id,
+            phase,
+            position_ms,
+            ..
+        } = &mut snapshot
+        else {
+            return Err(anyhow!("Browser session is no longer active"));
+        };
+        if *playback_id != command.playback_id {
+            return Err(anyhow!("Browser session is no longer active"));
+        }
+        match command.event {
+            BrowserEvent::Stop | BrowserEvent::Ended | BrowserEvent::Failed => {
+                self.close_active_playback().await;
+                self.set_snapshot(if command.event == BrowserEvent::Failed {
+                    PlaybackSnapshot::Failed {
+                        error: SafeError::new("BROWSER_MEDIA_FAILED", "The browser cannot play this source. Select another source or use an external player.", true),
+                    }
+                } else {
+                    PlaybackSnapshot::Idle
+                });
+            }
+            event => {
+                let active = self
+                    .active_session
+                    .lock()
+                    .await
+                    .clone()
+                    .context("Browser session is no longer active")?;
+                active.lock().await.browser_seen_at = Some(Instant::now());
+                *position_ms = command.position_ms.min(7 * 24 * 60 * 60 * 1000);
+                *phase = match event {
+                    BrowserEvent::Playing => BrowserPhase::Playing,
+                    BrowserEvent::Paused => BrowserPhase::Paused,
+                    BrowserEvent::Buffering => BrowserPhase::Buffering,
+                    _ => *phase,
+                };
+                if command.event == BrowserEvent::Heartbeat {
+                    let _ = self.snapshot_tx.send(snapshot);
+                } else {
+                    self.set_snapshot(snapshot);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn set_snapshot(&self, snapshot: PlaybackSnapshot) {
@@ -965,7 +1119,7 @@ fn reconstruct_queue(
         genres: None,
         imdb_rating: None,
         description: None,
-        kind: if seed.catalog_item.is_anime {
+        kind: if seed.catalog_item.id.starts_with("kitsu:") {
             CatalogKind::AnimeKitsu
         } else {
             CatalogKind::Cinemeta
@@ -1021,6 +1175,9 @@ fn is_cancelled_error(error: &anyhow::Error) -> bool {
 }
 
 fn safe_error_for_pipeline(error: &anyhow::Error) -> SafeError {
+    if let Some(error) = error.downcast_ref::<super::browser::BrowserUnsupported>() {
+        return SafeError::new("BROWSER_UNSUPPORTED", error.to_string(), true);
+    }
     if error.is::<player::PlayerStartupError>() {
         return SafeError::new("PLAYER_START_FAILED",
             "The player closed before startup completed. Export a debug report to check the failure.", true);
@@ -1079,6 +1236,10 @@ fn safe_error_for_pipeline(error: &anyhow::Error) -> SafeError {
     }
     SafeError::playback_failed("Playback could not start. Try another source.")
 }
+
+#[cfg(test)]
+#[path = "browser_tests.rs"]
+mod browser_tests;
 
 #[cfg(test)]
 mod tests {

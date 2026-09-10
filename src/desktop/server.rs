@@ -127,6 +127,7 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/episodes", post(handle_episodes))
         .route("/api/streams", post(handle_streams))
         .route("/api/play", post(handle_play))
+        .route("/api/browser/event", post(handle_browser_event))
         .route("/api/next", post(handle_next))
         .route("/api/stop", post(handle_stop))
         .route(
@@ -223,6 +224,23 @@ async fn handle_export_diagnostics(
         ],
         Json(state.service.coordinator().debug_report()),
     ))
+}
+
+async fn handle_browser_event(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::playback::BrowserEventCommand>,
+) -> Result<Response, StatusCode> {
+    validate_origin_and_token(&headers, &state)?;
+    match state.service.coordinator().browser_event(command).await {
+        Ok(()) => Ok(Json(json!({ "success": true })).into_response()),
+        Err(_) => Ok(api_error(
+            StatusCode::CONFLICT,
+            "BROWSER_SESSION_CHANGED",
+            "The playback session changed. Refresh its status.",
+            false,
+        )),
+    }
 }
 
 async fn handle_health(

@@ -141,13 +141,13 @@ jobs:
           npm run build
 
       - name: Install cargo-packager
-        run: cargo install cargo-packager --locked
+        run: cargo install cargo-packager --version 0.11.8 --locked
 
       - name: Build macOS Universal DMG
         if: matrix.os == 'macos-latest'
         run: |
-          cargo build --release --features web-ui --target aarch64-apple-darwin --bin flix-desktop
-          cargo build --release --features web-ui --target x86_64-apple-darwin --bin flix-desktop
+          cargo build --locked --release --features web-ui --target aarch64-apple-darwin --bin flix-desktop
+          cargo build --locked --release --features web-ui --target x86_64-apple-darwin --bin flix-desktop
           mkdir -p target/universal-apple-darwin/release
           lipo -create \
             target/aarch64-apple-darwin/release/flix-desktop \
@@ -158,7 +158,7 @@ jobs:
       - name: Build Windows NSIS Installer
         if: matrix.os == 'windows-latest'
         run: |
-          cargo build --release --features web-ui --target x86_64-pc-windows-msvc --bin flix-desktop
+          cargo build --locked --release --features web-ui --target x86_64-pc-windows-msvc --bin flix-desktop
           cargo packager --release --formats nsis --target x86_64-pc-windows-msvc --binaries-dir target/x86_64-pc-windows-msvc/release --out-dir target/packager
 
       - name: Stage the package under a stable name

@@ -69,3 +69,37 @@ fn macos_vlc_does_not_receive_unsupported_instance_options() {
         .get_args()
         .any(|arg| arg.to_string_lossy().contains("one-instance")));
 }
+
+#[test]
+fn verified_anime_tracks_override_english_preferences() {
+    use flix::player::{command, PlaybackOptions, Player, PlayerKind};
+    let options = PlaybackOptions::new("Language fixture".into(), 1).with_selected_tracks(Some(
+        flix::playback::anime::SelectedTracks {
+            audio: 1,
+            subtitle: Some(1),
+        },
+    ));
+    for kind in [PlayerKind::Vlc, PlayerKind::Mpv] {
+        let player = Player {
+            kind,
+            path: "test-player".into(),
+            version: None,
+        };
+        let command = command(&player, "sample.mkv", &options);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect();
+        let expected = match kind {
+            PlayerKind::Vlc => [
+                "--audio-language=jpn,ja,japanese",
+                "--audio-track=1",
+                "--sub-track=1",
+            ],
+            PlayerKind::Mpv => ["--alang=jpn,ja,japanese", "--aid=2", "--sid=2"],
+        };
+        for argument in expected {
+            assert!(args.iter().any(|arg| arg == argument));
+        }
+    }
+}

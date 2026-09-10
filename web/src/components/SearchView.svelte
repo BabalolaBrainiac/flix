@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
-  import { search, getEpisodes, getStreams, play } from '../lib/api';
+  import { getEpisodes, getStreams, play } from '../lib/api';
+  import { searchProgressively } from '../lib/search';
   import type {
     CatalogItemSummary,
     EpisodeSummary,
@@ -15,6 +16,9 @@
   let activeFilter: 'all' | 'movie' | 'series' | 'anime' = 'all';
   let isLoading = false;
   let searchRequest = 0;
+  let searchAbort: AbortController | null = null;
+  let pendingCatalogs: string[] = [];
+  let hasSearched = false;
   let errorMsg = '';
   let items: CatalogItemSummary[] = [];
   let notes: string[] = [];
@@ -49,22 +53,30 @@
   onDestroy(() => {
     detailRequest += 1;
     searchRequest += 1;
+    searchAbort?.abort();
     clearStreams();
   });
 
   async function handleSearch() {
     if (!query.trim()) return;
     const request = ++searchRequest;
+    searchAbort?.abort();
+    searchAbort = new AbortController();
     isLoading = true;
+    hasSearched = true;
+    items = [];
+    failedPosters = new Set();
+    pendingCatalogs = ['Movies', 'Series', 'Anime'];
     errorMsg = '';
     notes = [];
     returnToSearch();
     try {
-      const isAnimeOnly = activeFilter === 'anime';
-      const res = await search(query.trim(), isAnimeOnly);
-      if (request !== searchRequest) return;
-      items = res.items;
-      notes = res.notes;
+      await searchProgressively(query.trim(), searchAbort.signal, (res, pending) => {
+        if (request !== searchRequest) return;
+        items = res.items;
+        notes = res.notes;
+        pendingCatalogs = pending;
+      });
     } catch (e: any) {
       if (request !== searchRequest) return;
       errorMsg = e.message || 'Search failed';
@@ -83,7 +95,7 @@
 
   $: seasons = Array.from(new Set(episodes.map((e) => e.season))).sort((a, b) => a - b);
   $: seasonEpisodes = episodes.filter((e) => e.season === activeSeason);
-  $: needsEpisode = selectedItem?.media_type === 'series' || selectedItem?.is_anime;
+  $: needsEpisode = selectedItem && selectedItem.media_type !== 'movie';
   $: showStreams = selectedItem && (!needsEpisode || selectedEpisode !== null);
 
   async function selectItem(item: CatalogItemSummary) {
@@ -99,11 +111,12 @@
     actionMessage = '';
 
     try {
-      if (item.media_type === 'series' || item.is_anime) {
+      if (item.media_type !== 'movie') {
         isLoadingEpisodes = true;
         const epRes = await getEpisodes(item.id, item.is_anime);
         if (request !== detailRequest) return;
         episodes = epRes.episodes;
+        if (epRes.is_anime) selectedItem = { ...item, is_anime: true };
         if (episodes.length > 0) {
           activeSeason = episodes[0].season;
         }
@@ -113,6 +126,7 @@
         const streamRes = await getStreams('movie', item.id, false, streamAbort.signal);
         if (request !== detailRequest) return;
         streams = streamRes.streams;
+        if (streamRes.is_anime) selectedItem = { ...item, is_anime: true };
       }
     } catch (e: any) {
       if (request !== detailRequest) return;
@@ -120,7 +134,7 @@
     } finally {
       if (request !== detailRequest) return;
       isLoadingEpisodes = false;
-      if (item.media_type === 'movie' && !item.is_anime) isLoadingStreams = false;
+      if (item.media_type === 'movie') isLoadingStreams = false;
     }
   }
 
@@ -139,6 +153,7 @@
       const streamRes = await getStreams('series', episode.stream_id || episode.id, selectedItem?.is_anime ?? false, signal);
       if (request !== streamRequest) return;
       streams = streamRes.streams;
+      if (streamRes.is_anime && selectedItem) selectedItem = { ...selectedItem, is_anime: true };
     } catch (e: any) {
       if (request !== streamRequest) return;
       streamError = e.message || 'Sources could not load. Try again.';
@@ -179,6 +194,9 @@
   $: recommendedStream = streams.find((s) => s.is_recommended) || streams[0];
   $: otherStreams = streams.filter((s) => s !== recommendedStream);
 
+  let playbackTarget: 'external' | 'browser' = 'external';
+  $: if (selectedItem?.is_anime && playbackTarget === 'browser') playbackTarget = 'external';
+
   async function handlePlayStream(stream: StreamSummary) {
     if (isPreparingPlayback || !selectedItem || (needsEpisode && !selectedEpisode)) return;
     const request = streamRequest;
@@ -186,6 +204,7 @@
     actionMessage = 'Preparing playback…';
     try {
       const command: PlayCommand = {
+        target: playbackTarget,
         source_id: stream.source_id,
         file_index: stream.file_index,
         media_ref:
@@ -259,6 +278,7 @@
           <input
             type="text"
             bind:value={query}
+            maxlength={200}
             placeholder="Search movies, TV shows, and anime..."
             class="search-input"
           />
@@ -266,7 +286,7 @@
             <Loader2 size={18} class="spinner-icon" />
           {/if}
         </div>
-        <button type="submit" class="search-btn" disabled={isLoading || !query.trim()}>
+        <button type="submit" class="search-btn" disabled={!query.trim()}>
           Search
         </button>
       </form>
@@ -306,6 +326,13 @@
       </div>
     {/if}
 
+    {#if isLoading || notes.length > 0}
+      <div class="search-status" role="status" aria-live="polite">
+        {#if isLoading}<p>Searching {pendingCatalogs.join(', ')}… You can open a result now.</p>{/if}
+        {#each notes as note}<p>{note}</p>{/each}
+      </div>
+    {/if}
+
     {#if filteredItems.length > 0}
       <div class="poster-grid">
         {#each filteredItems as item (item.id)}
@@ -342,7 +369,7 @@
           </button>
         {/each}
       </div>
-    {:else if !isLoading && query}
+    {:else if !isLoading && hasSearched && query}
       <div class="empty-state">
         <p>No results found for "{query}".</p>
       </div>
@@ -435,7 +462,17 @@
       <section class="streams-section" id="selected-sources" aria-labelledby="sources-heading" bind:this={sourcePanel}>
         <div class="section-heading">
           <h3 id="sources-heading">{selectedEpisode ? formatEpisodeTitle(selectedEpisode) : 'Choose a source'}</h3>
-          <p>Choose Play to open your media player.</p>
+          <label class="player-choice">Play with
+            <select bind:value={playbackTarget} disabled={isPreparingPlayback}>
+              <option value="external">External player</option>
+              <option value="browser" disabled={selectedItem?.is_anime}>Browser preview</option>
+            </select>
+          </label>
+          {#if playbackTarget === 'browser'}
+            <p>MP4 and WebM only. Anime needs the external player until verified track selection is available.</p>
+          {:else if selectedItem?.is_anime}
+            <p>Original audio and English subtitles. Anime currently needs an external player.</p>
+          {/if}
         </div>
         {#if isLoadingStreams}
           <div class="loading-box" role="status">
@@ -539,6 +576,11 @@
 </div>
 
 <style>
+  .search-status { color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem; }
+  .search-status p { margin: 0.4rem 0; }
+  .player-choice { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 8px 0; color: var(--text-secondary); font-size: .85rem; }
+  .player-choice select { padding: 8px; background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
+
   .search-view {
     max-width: 1280px;
     margin: 0 auto;

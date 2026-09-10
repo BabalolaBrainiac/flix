@@ -142,6 +142,7 @@ fn desktop_episode_queue_seed_advances_across_season_boundaries() {
 #[test]
 fn serializes_play_command_with_queue_and_alternatives() {
     let command = flix::desktop::PlayCommand {
+        target: Default::default(),
         source_id: Some("src-123".to_string()),
         magnet: Some("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_string()),
         file_index: Some(0),

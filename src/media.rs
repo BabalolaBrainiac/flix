@@ -2,14 +2,14 @@ use crate::meta::parse;
 use crate::session::TorrentFile;
 use std::ops::Range;
 
-const WARMUP_HEAD_BYTES: u64 = 4 * 1_048_576;
-const WARMUP_TAIL_BYTES: u64 = 1_048_576;
+const WARMUP_HEAD_BYTES: u64 = 1_048_576;
+const WARMUP_TAIL_BYTES: u64 = 512 * 1024;
 
 // Larger warm-up for files above 2 GiB (typical 4K content).
 // 4K video has higher bitrate and larger codec metadata.
 const WARMUP_LARGE_THRESHOLD: u64 = 2 * 1_073_741_824;
-const WARMUP_LARGE_HEAD_BYTES: u64 = 16 * 1_048_576;
-const WARMUP_LARGE_TAIL_BYTES: u64 = 4 * 1_048_576;
+const WARMUP_LARGE_HEAD_BYTES: u64 = 3 * 1_048_576;
+const WARMUP_LARGE_TAIL_BYTES: u64 = 1_048_576;
 
 pub fn select_default_video(files: &[TorrentFile]) -> Option<&TorrentFile> {
     let first_episode = files

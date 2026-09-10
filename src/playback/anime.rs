@@ -9,7 +9,7 @@ pub struct SelectedTracks {
     pub subtitle: Option<usize>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 struct Track {
     kind: u64,
     language: String,
@@ -20,10 +20,16 @@ struct Track {
     disabled: bool,
 }
 
-pub async fn inspect(
-    mut reader: impl AsyncRead + Unpin,
-    external_english: bool,
-) -> Result<SelectedTracks> {
+#[derive(Clone, Debug)]
+pub struct ParsedTracks(Vec<Track>);
+
+impl ParsedTracks {
+    pub fn select(&self, external_english: bool) -> Result<SelectedTracks> {
+        select_tracks(&self.0, external_english)
+    }
+}
+
+pub async fn parse_tracks(mut reader: impl AsyncRead + Unpin) -> Result<ParsedTracks> {
     let mut bytes = Vec::new();
     let mut chunk = [0; 16384];
     while bytes.len() < HEADER_LIMIT {
@@ -33,10 +39,17 @@ pub async fn inspect(
         }
         bytes.extend_from_slice(&chunk[..count]);
         if let Some(tracks) = parse_header(&bytes)? {
-            return select_tracks(&tracks, external_english);
+            return Ok(ParsedTracks(tracks));
         }
     }
     bail!("Anime language check failed. Select an MKV source with labeled audio and English subtitles.")
+}
+
+pub async fn inspect(
+    reader: impl AsyncRead + Unpin,
+    external_english: bool,
+) -> Result<SelectedTracks> {
+    parse_tracks(reader).await?.select(external_english)
 }
 
 fn select_tracks(tracks: &[Track], external_english: bool) -> Result<SelectedTracks> {

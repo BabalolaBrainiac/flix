@@ -100,11 +100,15 @@ Open it once with either method:
 
 A locally built binary does not show this message, because only files downloaded through a browser get the quarantine flag.
 
+For an illustrated, non-technical walkthrough, see [docs/instructions/macos.md](docs/instructions/macos.md).
+
 ### Install a packaged build on Windows
 
 Run `Flix-Windows-x64-Setup.exe` and follow the installer steps. Windows can show an unknown publisher warning because the installer is unsigned.
 Open Flix from the Start menu. Enter your invite code when the activation page opens.
 Use VLC or mpv for anime and formats that the browser preview does not support.
+
+For an illustrated, non-technical walkthrough, see [docs/instructions/windows.md](docs/instructions/windows.md).
 
 ## Gateway
 

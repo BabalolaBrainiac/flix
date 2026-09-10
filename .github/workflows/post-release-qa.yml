@@ -1,0 +1,197 @@
+name: Post-Release QA
+
+# Runs after a GitHub Release publishes. It downloads each published
+# package, installs it, then drives the installed app through activation
+# and playback for a movie, an anime title, and a TV show. No human input
+# is required.
+#
+# The movie, anime, and TV show checks use small synthetic video files that
+# this workflow generates and seeds locally (see scripts/qa/). They do not
+# come from a live catalog or a public tracker, so the check has no
+# external network dependency for content and no copyright exposure from
+# running unattended on every release.
+#
+# Every check drives the browser-preview playback path over plain HTTP, so
+# no media player (VLC, mpv, or otherwise) is installed or launched on the
+# runner. The anime check still exercises the real Japanese-audio/English-
+# subtitle track selection: Flix runs that check before it rejects anime in
+# the browser preview, so a specific BROWSER_UNSUPPORTED failure there is
+# the expected, passing outcome (see scripts/qa/run-post-release-check.mjs).
+#
+# QA_INVITE_CODE is an environment secret on the "release" environment (the
+# same trust boundary release.yml already uses to publish): an invite code
+# created once with `./scripts/admin.sh invite --max 10` from `gateway/` and
+# stored with `gh secret set QA_INVITE_CODE --env release`. That script
+# stays a local, owner-run tool because it holds production Cloudflare D1
+# access; only the invite code it produced is a secret here, not the D1
+# access itself.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to check (e.g. v0.2.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  qa-macos:
+    name: Post-Release QA (macOS)
+    runs-on: macos-latest
+    environment: release
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install ffmpeg
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern 'Flix-macOS-universal.dmg' \
+            --pattern 'SHA256SUMS.txt'
+
+      - name: Verify checksum
+        run: |
+          set -euo pipefail
+          grep 'Flix-macOS-universal.dmg' SHA256SUMS.txt > expected.txt
+          shasum -a 256 -c expected.txt
+
+      - name: Mount the DMG and check the app bundle
+        run: |
+          set -euo pipefail
+          MOUNT_DIR="$(mktemp -d)"
+          hdiutil attach Flix-macOS-universal.dmg -mountpoint "$MOUNT_DIR" -nobrowse -quiet
+          test -d "$MOUNT_DIR/Flix.app"
+          test -f "$MOUNT_DIR/Flix.app/Contents/Info.plist"
+          test -x "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop"
+          echo "MOUNT_DIR=$MOUNT_DIR" >> "$GITHUB_ENV"
+
+      - name: Run automated activation and playback QA
+        env:
+          QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
+          CI: true
+        run: node scripts/qa/run-post-release-check.mjs --app "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop"
+
+      - name: Unmount the DMG
+        if: always()
+        run: hdiutil detach "$MOUNT_DIR" -quiet || true
+
+  qa-windows:
+    name: Post-Release QA (Windows)
+    runs-on: windows-latest
+    environment: release
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || choco install ffmpeg -y
+
+      - name: Download release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern 'Flix-Windows-x64-Setup.exe' \
+            --pattern 'SHA256SUMS.txt'
+
+      - name: Verify checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep 'Flix-Windows-x64-Setup.exe' SHA256SUMS.txt > expected.txt
+          sha256sum -c expected.txt
+
+      - name: Run the installer silently and check the install
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "flix-install"
+          Start-Process -FilePath ".\Flix-Windows-x64-Setup.exe" -ArgumentList "/S", "/D=$installDir" -Wait
+          if (-not (Test-Path (Join-Path $installDir "flix-desktop.exe"))) {
+            throw "flix-desktop.exe was not found after a silent install."
+          }
+          echo "INSTALL_DIR=$installDir" >> $env:GITHUB_ENV
+
+      - name: Run automated activation and playback QA
+        shell: bash
+        env:
+          QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
+          CI: true
+        run: node scripts/qa/run-post-release-check.mjs --app "$INSTALL_DIR/flix-desktop.exe"
+
+  flag-regression:
+    name: Flag a Post-Release Regression
+    needs: [qa-macos, qa-windows]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open a regression issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "Post-release QA regression in $TAG" \
+            --label "qa,regression" \
+            --body "$(cat <<EOF
+          The automated post-release QA check failed for $TAG.
+
+          At least one of macOS or Windows activation/playback checks did
+          not pass (movie, anime with original Japanese audio, or TV show
+          with the next-episode action). See the failed step in the run:
+
+          $RUN_URL
+          EOF
+          )"

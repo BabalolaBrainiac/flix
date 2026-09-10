@@ -29,8 +29,8 @@ use crate::session::{TorrentId, TorrentSession};
 // 1 MiB read buffer for streaming responses.
 // The tokio-util default is 4 KiB, which is too small for high-bitrate video.
 const STREAM_READ_BUF: usize = 1_048_576;
-const MAX_ACTIVE_STREAMS: usize = 12;
-const STREAM_SLOT_WAIT: Duration = Duration::from_secs(2);
+const MAX_ACTIVE_STREAMS: usize = 32;
+const STREAM_SLOT_WAIT: Duration = Duration::from_secs(10);
 
 pub struct ServerHandle {
     port: u16,

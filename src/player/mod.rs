@@ -303,7 +303,8 @@ pub fn command(p: &Player, url: &str, opts: &PlaybackOptions) -> Command {
                 cmd.arg("--no-one-instance");
                 cmd.arg("--no-one-instance-when-started-from-file");
             }
-            cmd.arg("--play-and-exit");
+            // Do not use --play-and-exit. VLC exits on HTTP stream disconnects during seeks.
+            // ManagedPlayer monitors process lifetime directly when the user closes the window.
             cmd.arg(url);
             cmd.arg(format!("--meta-title={}", opts.title));
             if opts.file_length >= LARGE_FILE_THRESHOLD {

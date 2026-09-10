@@ -66,7 +66,7 @@ fn select_tracks(tracks: &[Track], _external_english: bool) -> Result<SelectedTr
                     && matches!(primary_language(&track.language), "ja" | "jpn" | "japanese")
             })
         })
-        .or_else(|| audio.iter().position(|track| usable(track)))
+        .or_else(|| audio.iter().position(usable))
         .context("No usable audio track is available. Select another source.")?;
     let subtitle = tracks
         .iter()

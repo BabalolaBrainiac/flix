@@ -780,11 +780,9 @@ impl PlaybackCoordinator {
                 let (reader, _) = request
                     .session
                     .open_stream(request.torrent_id, request.video.index)?;
-                if let Ok(Ok(tracks)) = tokio::time::timeout(
-                    Duration::from_secs(3),
-                    super::anime::parse_tracks(reader),
-                )
-                .await
+                if let Ok(Ok(tracks)) =
+                    tokio::time::timeout(Duration::from_secs(3), super::anime::parse_tracks(reader))
+                        .await
                 {
                     let has_embedded_en = tracks
                         .select(false)
@@ -879,12 +877,9 @@ impl PlaybackCoordinator {
                     let (reader, _) = request
                         .session
                         .open_stream(request.torrent_id, request.video.index)?;
-                    tokio::time::timeout(
-                        Duration::from_secs(3),
-                        super::anime::parse_tracks(reader),
-                    )
-                    .await
-                    .context("Anime language check timed out")??
+                    tokio::time::timeout(Duration::from_secs(3), super::anime::parse_tracks(reader))
+                        .await
+                        .context("Anime language check timed out")??
                 }
             };
             Some(tracks.select(!subtitle_paths.is_empty())?)

@@ -187,7 +187,9 @@ pub async fn resolve_gateway_english_subtitle(
             if let Some(imdb_id) = resolve_kitsu_imdb_id(catalog_id).await {
                 let (season, episode) = match media {
                     MediaRef::Movie { .. } => (None, None),
-                    MediaRef::Episode { season, episode, .. } => (Some(*season), Some(*episode)),
+                    MediaRef::Episode {
+                        season, episode, ..
+                    } => (Some(*season), Some(*episode)),
                 };
                 lookup = Some(GatewaySubtitleLookup {
                     imdb_id,
@@ -746,7 +748,10 @@ mod tests {
     #[test]
     fn extracts_imdb_id_from_raw_identifiers() {
         assert_eq!(extract_imdb_id("tt7124066"), Some("tt7124066".to_string()));
-        assert_eq!(extract_imdb_id("tt7124066:1:7"), Some("tt7124066".to_string()));
+        assert_eq!(
+            extract_imdb_id("tt7124066:1:7"),
+            Some("tt7124066".to_string())
+        );
         assert_eq!(extract_imdb_id("tt0111161"), Some("tt0111161".to_string()));
         assert_eq!(extract_imdb_id("kitsu:13274"), None);
         assert_eq!(extract_imdb_id("invalid"), None);

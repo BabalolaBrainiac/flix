@@ -19,6 +19,25 @@ pub struct DebugEvent {
     player: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     exit: Option<crate::player::PlayerExit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<DebugDetails>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DebugDetails {
+    Search {
+        catalog: Option<crate::stremio::SearchCatalog>,
+        duration_ms: u64,
+        items: usize,
+        failed: bool,
+    },
+    Languages {
+        anime: bool,
+        audio_index: Option<usize>,
+        subtitle_index: Option<usize>,
+        external_english: bool,
+    },
 }
 
 #[derive(Serialize)]
@@ -73,6 +92,7 @@ impl DebugLog {
                 _ => None,
             },
             exit: None,
+            details: None,
         };
         self.append(event);
     }
@@ -88,6 +108,21 @@ impl DebugLog {
                 _ => None,
             },
             exit: Some(exit),
+            details: None,
+        });
+    }
+
+    pub fn record_details(&self, details: DebugDetails) {
+        self.append(DebugEvent {
+            elapsed_ms: self.started.elapsed().as_millis() as u64,
+            stage: match details {
+                DebugDetails::Search { .. } => "search_completed",
+                DebugDetails::Languages { .. } => "languages_selected",
+            },
+            code: None,
+            player: None,
+            exit: None,
+            details: Some(details),
         });
     }
 
@@ -136,6 +171,12 @@ fn stage_and_code(snapshot: &PlaybackSnapshot) -> (&'static str, Option<String>)
         PlaybackSnapshot::DownloadingSubtitle { .. } => "downloading_subtitle",
         PlaybackSnapshot::LaunchingPlayer { .. } => "launching_player",
         PlaybackSnapshot::Playing { .. } => "playing",
+        PlaybackSnapshot::Browser { phase, .. } => match phase {
+            crate::playback::types::BrowserPhase::Ready => "browser_ready",
+            crate::playback::types::BrowserPhase::Playing => "browser_playing",
+            crate::playback::types::BrowserPhase::Paused => "browser_paused",
+            crate::playback::types::BrowserPhase::Buffering => "browser_buffering",
+        },
         PlaybackSnapshot::Stopping => "stopping",
         PlaybackSnapshot::Failed { error } => return ("failed", Some(error.code.clone())),
     };

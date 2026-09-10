@@ -5,6 +5,52 @@ use reqwest::StatusCode;
 use tempfile::TempDir;
 
 #[tokio::test]
+async fn browser_events_require_auth_and_reject_stale_sessions() {
+    let root = TempDir::new().unwrap();
+    let server = DesktopServer::bind(DesktopService::new(Config {
+        download_dir: root.path().join("downloads"),
+        data_dir: root.path().join("data"),
+    }))
+    .await
+    .unwrap();
+    let access_token = server.state.token.clone();
+    let url = format!("{}/api/browser/event", server.local_url());
+    let shutdown = server.state.shutdown_tx.clone();
+    let task = tokio::spawn(server.run());
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({"playback_id": "stale", "event": "stop"});
+    assert_eq!(
+        client.post(&url).json(&body).send().await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        client
+            .post(&url)
+            .header("X-Flix-Token", &access_token)
+            .header(ORIGIN, "https://example.org")
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        client
+            .post(&url)
+            .header("X-Flix-Token", &access_token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+    shutdown.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn rejects_api_requests_without_or_with_invalid_token() {
     let temp = TempDir::new().unwrap();
     let config = Config {

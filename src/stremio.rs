@@ -8,6 +8,13 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod cache;
+mod metadata;
+mod search;
+pub use search::SearchCatalog;
+#[cfg(test)]
+mod tests;
+
 const CINEMETA_BASE: &str = "https://v3-cinemeta.strem.io/";
 const ANIME_KITSU_BASE: &str = "https://anime-kitsu.strem.fun/";
 const TORRENTIO_BASE: &str = "https://torrentio.strem.fun/";
@@ -412,6 +419,7 @@ pub struct StremioClient {
     cinemeta_base: reqwest::Url,
     anime_base: reqwest::Url,
     stream_base: reqwest::Url,
+    responses: std::sync::Mutex<cache::ResponseCache>,
 }
 
 impl StremioClient {
@@ -437,6 +445,7 @@ impl StremioClient {
             cinemeta_base: addon_base("FLIX_CINEMETA_URL", CINEMETA_BASE)?,
             anime_base: addon_base("FLIX_ANIME_KITSU_URL", ANIME_KITSU_BASE)?,
             stream_base: addon_base("FLIX_TORRENT_STREAM_URL", TORRENTIO_BASE)?,
+            responses: Default::default(),
         })
     }
 
@@ -498,6 +507,7 @@ impl StremioClient {
         id: &str,
         anime: bool,
     ) -> Result<Vec<TorrentStream>> {
+        let anime = anime || self.content_is_anime(media_type, id).await?;
         let stream_type = if id.starts_with("kitsu:") || id.contains(':') {
             "series"
         } else {
@@ -606,16 +616,34 @@ impl StremioClient {
     }
 
     async fn get_json(&self, url: reqwest::Url, operation: &str) -> Result<Value> {
+        let cacheable = matches!(operation, "catalog" | "metadata");
+        if cacheable {
+            if let Some(bytes) = self
+                .responses
+                .lock()
+                .ok()
+                .and_then(|mut cache| cache.get(url.as_str()))
+            {
+                return serde_json::from_slice(&bytes)
+                    .context("Cached catalog response is invalid");
+            }
+        }
         let response = self
             .client
-            .get(url)
+            .get(url.clone())
             .header("Accept", "application/json")
             .send()
             .await
             .with_context(|| format!("Stremio {operation} request failed"))?;
         let bytes = read_response(response, JSON_LIMIT, operation).await?;
-        serde_json::from_slice(&bytes)
-            .with_context(|| format!("Stremio returned invalid JSON for {operation}"))
+        let value = serde_json::from_slice(&bytes)
+            .with_context(|| format!("Stremio returned invalid JSON for {operation}"))?;
+        if cacheable {
+            if let Ok(mut cache) = self.responses.lock() {
+                cache.insert(url.to_string(), bytes);
+            }
+        }
+        Ok(value)
     }
 }
 

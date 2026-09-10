@@ -97,6 +97,8 @@
         </button>
       </div>
     </div>
+  {:else if playbackState.state === 'browser'}
+    <p>The browser player is above. Use its controls to continue playback.</p>
   {:else}
     <div class="idle-card panel">
       <Film size={48} class="idle-icon" />

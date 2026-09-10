@@ -11,6 +11,7 @@
   import ReaderView from './components/ReaderView.svelte';
   import SettingsView from './components/SettingsView.svelte';
   import DiagnosticsView from './components/DiagnosticsView.svelte';
+  import BrowserPlayer from './components/BrowserPlayer.svelte';
   import NowPlayingBar from './components/NowPlayingBar.svelte';
 
   let activeTab: 'search' | 'discover' | 'continue' | 'downloads' | 'reader' | 'settings' | 'diagnostics' = 'search';
@@ -78,6 +79,11 @@
   />
 
   <main class="main-content">
+    {#if playbackState.state === 'browser'}
+      {#key playbackState.playback_id}
+        <BrowserPlayer snapshot={playbackState} onStateChange={refreshStatus} />
+      {/key}
+    {/if}
     {#if activeTab === 'search'}
       <SearchView onPlayStarted={handlePlayStarted} />
     {:else if activeTab === 'discover'}

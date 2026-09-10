@@ -131,6 +131,14 @@ export async function getRecommendations(command: RecommendCommand): Promise<Rec
   });
 }
 
+export async function searchCatalog(query: string, catalog: 'movie' | 'series' | 'anime', signal: AbortSignal): Promise<SearchResponse> {
+  return request('/api/search', {
+    method: 'POST',
+    signal,
+    body: JSON.stringify({ query, catalog }),
+  });
+}
+
 export async function getEpisodes(itemId: string, isAnime: boolean): Promise<EpisodesResponse> {
   return request('/api/episodes', {
     method: 'POST',
@@ -264,5 +272,13 @@ export async function readerSaveProgress(publicationId: string, chapterId: strin
   return request('/api/reader/progress', {
     method: 'POST',
     body: JSON.stringify({ publication_id: publicationId, chapter_id: chapterId, page }),
+  });
+}
+
+export async function browserEvent(playbackId: string, event: import('./types').BrowserEvent, positionMs = 0): Promise<void> {
+  await request('/api/browser/event', {
+    method: 'POST',
+    body: JSON.stringify({ playback_id: playbackId, event, position_ms: positionMs }),
+    signal: AbortSignal.timeout(10_000),
   });
 }

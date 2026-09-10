@@ -27,7 +27,17 @@ pub async fn handle_search(
     if command.query.trim().is_empty() {
         return Err(anyhow!("Search query cannot be empty"));
     }
-    let results = client.search(&command.query, command.anime_only).await;
+    if command.query.chars().count() > 200 {
+        return Err(anyhow!("Search query is too long"));
+    }
+    let results = match command.catalog {
+        Some(catalog) => client.search_catalog(command.query.trim(), catalog).await,
+        None => {
+            client
+                .search(command.query.trim(), command.anime_only)
+                .await
+        }
+    };
     let items = results.items.iter().map(CatalogItemSummary::from).collect();
     Ok(SearchResponse {
         items,
@@ -154,14 +164,14 @@ pub async fn handle_episodes(
     client: &StremioClient,
     command: &EpisodesCommand,
 ) -> Result<EpisodesResponse> {
-    let kind = if command.is_anime {
+    let kind = if command.item_id.starts_with("kitsu:") {
         CatalogKind::AnimeKitsu
     } else {
         CatalogKind::Cinemeta
     };
     let item = CatalogItem {
         id: command.item_id.clone(),
-        media_type: if command.is_anime {
+        media_type: if kind == CatalogKind::AnimeKitsu {
             "anime".to_string()
         } else {
             "series".to_string()
@@ -175,9 +185,11 @@ pub async fn handle_episodes(
         kind,
     };
     let episodes = client.episodes(&item).await?;
+    let is_anime = command.is_anime || client.content_is_anime("series", &command.item_id).await?;
     let summaries = episodes.iter().map(EpisodeSummary::from).collect();
     Ok(EpisodesResponse {
         episodes: summaries,
+        is_anime,
     })
 }
 
@@ -187,7 +199,10 @@ pub async fn handle_streams(
     command: &StreamsCommand,
 ) -> Result<StreamsResponse> {
     let media_type = command.media_type.as_deref().unwrap_or("series");
-    let is_anime = command.is_anime || command.stream_id.starts_with("kitsu:");
+    let is_anime = command.is_anime
+        || client
+            .content_is_anime(media_type, &command.stream_id)
+            .await?;
     let streams = client
         .streams_for(media_type, &command.stream_id, is_anime)
         .await?;
@@ -214,7 +229,10 @@ pub async fn handle_streams(
             size: stream.size.clone(),
         });
     }
-    Ok(StreamsResponse { streams: summaries })
+    Ok(StreamsResponse {
+        streams: summaries,
+        is_anime,
+    })
 }
 
 pub async fn handle_downloads(

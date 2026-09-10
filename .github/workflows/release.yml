@@ -27,9 +27,17 @@ jobs:
           fetch-depth: 0
 
       - name: Verify commit belongs to main branch
+        env:
+          TARGET_COMMIT: ${{ inputs.commit }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          git merge-base --is-ancestor "${{ github.event.inputs.commit }}" origin/main
-          echo "Commit ${{ github.event.inputs.commit }} is verified on main branch."
+          set -euo pipefail
+          [[ "$TARGET_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git merge-base --is-ancestor "$TARGET_COMMIT" origin/main
+          git show "$TARGET_COMMIT:Cargo.toml" > /tmp/flix-release-Cargo.toml
+          python3 -c 'import os, tomllib; data = tomllib.load(open("/tmp/flix-release-Cargo.toml", "rb")); assert "v" + data["package"]["version"] == os.environ["RELEASE_VERSION"], "Release version does not match Cargo.toml"'
+          echo "The release version and main commit are valid."
 
   rerun-gates:
     name: Rerun Release Gates
@@ -121,13 +129,13 @@ jobs:
           npm run build
 
       - name: Install cargo-packager
-        run: cargo install cargo-packager --locked
+        run: cargo install cargo-packager --version 0.11.8 --locked
 
       - name: Build macOS Universal DMG
         if: matrix.os == 'macos-latest'
         run: |
-          cargo build --release --features web-ui --target aarch64-apple-darwin --bin flix-desktop
-          cargo build --release --features web-ui --target x86_64-apple-darwin --bin flix-desktop
+          cargo build --locked --release --features web-ui --target aarch64-apple-darwin --bin flix-desktop
+          cargo build --locked --release --features web-ui --target x86_64-apple-darwin --bin flix-desktop
           mkdir -p target/universal-apple-darwin/release
           lipo -create \
             target/aarch64-apple-darwin/release/flix-desktop \
@@ -138,7 +146,7 @@ jobs:
       - name: Build Windows NSIS Installer
         if: matrix.os == 'windows-latest'
         run: |
-          cargo build --release --features web-ui --target x86_64-pc-windows-msvc --bin flix-desktop
+          cargo build --locked --release --features web-ui --target x86_64-pc-windows-msvc --bin flix-desktop
           cargo packager --release --formats nsis --target x86_64-pc-windows-msvc --binaries-dir target/x86_64-pc-windows-msvc/release --out-dir target/packager
 
       - name: Stage the package under a stable name

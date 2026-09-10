@@ -119,10 +119,59 @@ pub enum PlaybackSnapshot {
         subtitle_ready: bool,
         has_next: bool,
     },
+    Browser {
+        media: MediaRef,
+        title: String,
+        quality: String,
+        playback_id: String,
+        stream_url: String,
+        mime_type: String,
+        subtitle_url: Option<String>,
+        phase: BrowserPhase,
+        position_ms: u64,
+        has_next: bool,
+    },
     Stopping,
     Failed {
         error: SafeError,
     },
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackTarget {
+    #[default]
+    External,
+    Browser,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserPhase {
+    Ready,
+    Playing,
+    Paused,
+    Buffering,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserEvent {
+    Playing,
+    Paused,
+    Buffering,
+    Heartbeat,
+    Ended,
+    Failed,
+    Stop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserEventCommand {
+    pub playback_id: String,
+    pub event: BrowserEvent,
+    #[serde(default)]
+    pub position_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

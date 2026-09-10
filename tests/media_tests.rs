@@ -50,7 +50,7 @@ fn warmup_ranges_stay_inside_the_file() {
     assert_eq!(warmup_ranges(100), vec![0..100]);
     assert_eq!(
         warmup_ranges(10 * 1_048_576),
-        vec![0..4 * 1_048_576, 9 * 1_048_576..10 * 1_048_576]
+        vec![0..1_048_576, (10 * 1_048_576 - 512 * 1024)..10 * 1_048_576]
     );
 }
 
@@ -59,14 +59,17 @@ fn warmup_ranges_expand_for_large_files() {
     let four_gb = 4 * 1_073_741_824_u64;
     let ranges = warmup_ranges(four_gb);
     assert_eq!(ranges.len(), 2);
-    assert_eq!(ranges[0], 0..16 * 1_048_576);
-    assert_eq!(ranges[1], four_gb - 4 * 1_048_576..four_gb);
+    assert_eq!(ranges[0], 0..3 * 1_048_576);
+    assert_eq!(ranges[1], four_gb - 1_048_576..four_gb);
 }
 
 #[test]
 fn startup_warmup_does_not_wait_for_optional_tail_metadata() {
     let length = 10 * 1_048_576;
 
-    assert_eq!(startup_range(length), Some(0..4 * 1_048_576));
-    assert_eq!(metadata_prefetch_range(length), Some(9 * 1_048_576..length));
+    assert_eq!(startup_range(length), Some(0..1_048_576));
+    assert_eq!(
+        metadata_prefetch_range(length),
+        Some((10 * 1_048_576 - 512 * 1024)..length)
+    );
 }

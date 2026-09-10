@@ -56,7 +56,7 @@ impl StremioClient {
             query,
             CatalogKind::AnimeKitsu,
         );
-        match tokio::time::timeout(Duration::from_secs(6), request).await {
+        match tokio::time::timeout(Duration::from_millis(2500), request).await {
             Ok(Ok(items)) if !items.is_empty() => return Ok(items),
             _ => {}
         }
@@ -88,14 +88,18 @@ impl StremioClient {
             }
             let checked: Vec<_> = stream::iter(items)
                 .map(|mut item| async move {
-                    if self.content_is_anime(&item.media_type, &item.id).await? {
+                    let has_anime_genre = item
+                        .genres
+                        .as_ref()
+                        .is_some_and(|genres| genres.iter().any(|g| g.eq_ignore_ascii_case("Anime")));
+                    if has_anime_genre || self.content_is_anime(&item.media_type, &item.id).await? {
                         item.genres.get_or_insert_default().push("Anime".into());
                         Ok(Some(item))
                     } else {
                         Ok(None)
                     }
                 })
-                .buffered(4)
+                .buffered(6)
                 .collect::<Vec<Result<Option<CatalogItem>>>>()
                 .await;
             let mut found = Vec::new();
@@ -113,7 +117,7 @@ impl StremioClient {
             }
             Ok(found)
         };
-        tokio::time::timeout(Duration::from_secs(6), fallback)
+        tokio::time::timeout(Duration::from_millis(3500), fallback)
             .await
             .context("Anime search timed out. Try again.")?
     }

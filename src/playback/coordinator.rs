@@ -770,20 +770,24 @@ impl PlaybackCoordinator {
         let warmup = request
             .session
             .warm_stream(request.torrent_id, request.video.index);
+        let cached_tracks = Arc::new(tokio::sync::Mutex::new(None));
+        let tracks_slot = Arc::clone(&cached_tracks);
         let subtitle_work = async {
             if request.is_anime {
                 let (reader, _) = request
                     .session
                     .open_stream(request.torrent_id, request.video.index)?;
-                if matches!(
-                    tokio::time::timeout(
-                        Duration::from_secs(3),
-                        super::anime::inspect(reader, false)
-                    )
-                    .await,
-                    Ok(Ok(_))
-                ) {
-                    return Ok::<_, anyhow::Error>(SubtitlePreparation::Ready(Vec::new()));
+                if let Ok(Ok(tracks)) = tokio::time::timeout(
+                    Duration::from_secs(3),
+                    super::anime::parse_tracks(reader),
+                )
+                .await
+                {
+                    let has_embedded_en = tracks.select(false).is_ok();
+                    *tracks_slot.lock().await = Some(tracks);
+                    if has_embedded_en {
+                        return Ok::<_, anyhow::Error>(SubtitlePreparation::Ready(Vec::new()));
+                    }
                 }
             }
             let cached = subtitles::cached_english_subtitles(
@@ -858,17 +862,21 @@ impl PlaybackCoordinator {
             };
 
         let selected_tracks = if request.is_anime && warmup_ready {
-            let (reader, _) = request
-                .session
-                .open_stream(request.torrent_id, request.video.index)?;
-            Some(
-                tokio::time::timeout(
-                    Duration::from_secs(3),
-                    super::anime::inspect(reader, !subtitle_paths.is_empty()),
-                )
-                .await
-                .context("Anime language check timed out")??,
-            )
+            let tracks = match cached_tracks.lock().await.take() {
+                Some(tracks) => tracks,
+                None => {
+                    let (reader, _) = request
+                        .session
+                        .open_stream(request.torrent_id, request.video.index)?;
+                    tokio::time::timeout(
+                        Duration::from_secs(3),
+                        super::anime::parse_tracks(reader),
+                    )
+                    .await
+                    .context("Anime language check timed out")??
+                }
+            };
+            Some(tracks.select(!subtitle_paths.is_empty())?)
         } else {
             None
         };

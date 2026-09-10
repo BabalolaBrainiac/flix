@@ -76,9 +76,11 @@ Thumbs.db
 *.swo
 *~
 
-# Project documents. Only README.md goes to the remote.
+# Project documents. Only README.md and the end-user install guides go to
+# the remote. Other project markdown, such as local test notes, stays local.
 *.md
 !/README.md
+!/docs/instructions/*.md
 
 # Gateway admin helper. Owner-local operational tooling, kept out of the remote.
 /gateway/scripts/admin.sh

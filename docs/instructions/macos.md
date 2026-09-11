@@ -33,25 +33,36 @@ Install VLC before you install Flix.
 ## Step 4: Open Flix for the first time
 
 Flix does not have an Apple developer signature yet. macOS blocks an
-unsigned app on its first launch. This is normal. Use one of the two
-methods below to open Flix.
+unsigned app on its first launch. You will likely see this exact
+message:
 
-### Method A: Right-click to open
+> "Apple could not verify 'Flix' is free of malware that may harm your
+> Mac or compromise your privacy."
 
-1. Open **Applications** in Finder.
-2. Right-click (or Control-click) the **Flix** icon.
-3. Choose **Open** from the menu.
-4. A dialog says macOS cannot check the app for malicious software.
-5. Click **Open** in that dialog.
-6. macOS remembers this choice. Later launches do not show the dialog.
+This is a warning, not a real block. You can still open Flix. Use one
+of the two methods below.
 
-If macOS still blocks the app, use this alternative method:
+### Method A: Allow it in System Settings
 
-1. Open **System Settings**.
-2. Click **Privacy & Security**.
-3. Scroll to the **Security** section.
-4. Find the message about Flix, then click **Open Anyway**.
-5. Confirm **Open** in the next dialog.
+This works on every current version of macOS.
+
+1. Double-click **Flix** in Applications. macOS shows the warning
+   above. Click **Done** to close it.
+2. Open **System Settings**.
+3. Click **Privacy & Security**.
+4. Scroll down to the **Security** section. You will see a line that
+   says Flix was blocked.
+5. Click **Open Anyway**.
+6. Enter your Mac password or use Touch ID if macOS asks for it.
+7. A second dialog appears, this time with an **Open** button. Click
+   **Open**.
+8. macOS remembers this choice. Later launches open normally, with no
+   warning.
+
+On an older macOS version, right-click (or Control-click) the **Flix**
+icon and choose **Open** first. Some versions show an **Open** button
+directly in the warning dialog. If yours does not, use the System
+Settings steps above.
 
 ### Method B: Terminal command
 

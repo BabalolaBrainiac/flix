@@ -78,11 +78,17 @@ jobs:
             --pattern 'Flix-macOS-universal.dmg' \
             --pattern 'SHA256SUMS.txt'
 
+      # SHA256SUMS.txt records each path as release-artifacts/<name>/<name>
+      # (actions/download-artifact nests each artifact in its own directory
+      # of that name when release.yml builds it) - gh release download gives
+      # a flat file with no such directory, so shasum -c's path check fails
+      # even when the content is correct. Compare the hash value directly.
       - name: Verify checksum
         run: |
           set -euo pipefail
-          grep 'Flix-macOS-universal.dmg' SHA256SUMS.txt > expected.txt
-          shasum -a 256 -c expected.txt
+          expected="$(grep 'Flix-macOS-universal.dmg' SHA256SUMS.txt | awk '{print $1}')"
+          actual="$(shasum -a 256 Flix-macOS-universal.dmg | awk '{print $1}')"
+          [ "$expected" = "$actual" ] || { echo "Checksum mismatch: expected $expected, got $actual" >&2; exit 1; }
 
       - name: Mount the DMG and check the app bundle
         run: |
@@ -144,12 +150,15 @@ jobs:
             --pattern 'Flix-Windows-x64-Setup.exe' \
             --pattern 'SHA256SUMS.txt'
 
+      # See the macOS job's checksum step for why this compares the hash
+      # value directly instead of using sha256sum -c on the recorded path.
       - name: Verify checksum
         shell: bash
         run: |
           set -euo pipefail
-          grep 'Flix-Windows-x64-Setup.exe' SHA256SUMS.txt > expected.txt
-          sha256sum -c expected.txt
+          expected="$(grep 'Flix-Windows-x64-Setup.exe' SHA256SUMS.txt | awk '{print $1}')"
+          actual="$(sha256sum Flix-Windows-x64-Setup.exe | awk '{print $1}')"
+          [ "$expected" = "$actual" ] || { echo "Checksum mismatch: expected $expected, got $actual" >&2; exit 1; }
 
       - name: Run the installer silently and check the install
         shell: pwsh

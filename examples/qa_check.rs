@@ -70,9 +70,11 @@ async fn run() -> Result<()> {
 
     println!("Locating the app download directory...");
     let download_dir = find_download_dir(&app_path)?;
+    println!("download_dir = {}", download_dir.display());
     copy_file_into(&fixtures.movie, &download_dir)?;
     copy_file_into(&fixtures.anime, &download_dir)?;
     copy_dir_into(&fixtures.show_dir, &download_dir)?;
+    log_placed_fixtures(&download_dir)?;
 
     println!("Starting flix-desktop...");
     let (mut child, credential) = start_app(&app_path).await?;
@@ -306,11 +308,39 @@ fn copy_dir_into(dir: &Path, download_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+// Diagnostic: confirms exactly what landed on disk, with sizes, right
+// before flix-desktop starts. Helps tell a path mismatch apart from a
+// librqbit-side verification issue when a run fails.
+fn log_placed_fixtures(download_dir: &Path) -> Result<()> {
+    fn walk(dir: &Path, depth: usize) -> Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            println!(
+                "{}{} ({} bytes)",
+                "  ".repeat(depth),
+                entry.path().display(),
+                meta.len()
+            );
+            if meta.is_dir() {
+                walk(&entry.path(), depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+    println!("Fixtures placed under {}:", download_dir.display());
+    walk(download_dir, 1)
+}
+
 // The app prints its local bootstrap URL once on startup. A background task
 // keeps draining stdout after that so the child never blocks on a full pipe.
 async fn start_app(app_path: &Path) -> Result<(Child, String)> {
     let mut child = Command::new(app_path)
         .args(["--no-open", "--port", &PORT.to_string()])
+        // Overrides the app's default "flix=info,warn" filter so a failed
+        // run's logs show real librqbit state (peers, verified bytes,
+        // piece checks) instead of just the high-level pipeline outcome.
+        .env("RUST_LOG", "flix=debug,librqbit=debug")
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()

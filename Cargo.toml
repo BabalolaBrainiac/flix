@@ -1,6 +1,6 @@
 [package]
 name = "flix"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Torrent streamer with CLI, TUI, and desktop web UI. Searches Stremio catalogs, plays in mpv/VLC while downloading."
 license = "MIT"

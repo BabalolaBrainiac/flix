@@ -6,7 +6,12 @@
 // and then clear your terminal.
 //
 // Usage:
-//   node scripts/create-invite.mjs [--max-devices N] [--local]
+//   node scripts/create-invite.mjs [--max-devices N] [--label TEXT] [--local]
+//
+// --label is a short tag stored alongside the invite (e.g. "qa",
+// "users-batch-1") so `admin.sh invites` shows what each code is for. It is
+// restricted to a safe character set because it is embedded directly into a
+// raw SQL statement below - see LABEL_PATTERN.
 //
 // The command prints the wrangler command that inserts the hash. Run that
 // command to activate the invite.
@@ -14,9 +19,12 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 
+const LABEL_PATTERN = /^[A-Za-z0-9 ._-]{1,40}$/;
+
 const { values } = parseArgs({
   options: {
     'max-devices': { type: 'string', default: '1' },
+    label: { type: 'string', default: '' },
     local: { type: 'boolean', default: false },
   },
 });
@@ -24,6 +32,14 @@ const { values } = parseArgs({
 const maxDevices = Number.parseInt(values['max-devices'], 10);
 if (!Number.isInteger(maxDevices) || maxDevices < 1 || maxDevices > 100) {
   console.error('--max-devices must be a whole number from 1 to 100.');
+  process.exit(1);
+}
+
+const label = values.label.trim();
+if (label && !LABEL_PATTERN.test(label)) {
+  console.error(
+    '--label may only use letters, digits, spaces, dot, underscore, and hyphen (1-40 characters).',
+  );
   process.exit(1);
 }
 
@@ -35,9 +51,12 @@ const code = randomBytes(32).toString('hex');
 const codeHash = createHash('sha256').update(code).digest('hex');
 const now = Date.now();
 
+// label is already restricted to LABEL_PATTERN above (no quotes possible),
+// so it is safe to embed directly here.
+const labelValue = label ? `'${label}'` : 'NULL';
 const sql =
-  'INSERT INTO invites (code_hash, created_at, max_devices, redeemed_count, is_revoked) ' +
-  `VALUES ('${codeHash}', ${now}, ${maxDevices}, 0, 0);`;
+  'INSERT INTO invites (code_hash, created_at, max_devices, redeemed_count, is_revoked, label) ' +
+  `VALUES ('${codeHash}', ${now}, ${maxDevices}, 0, 0, ${labelValue});`;
 
 const target = values.local ? '--local' : '--remote';
 
@@ -47,6 +66,7 @@ console.log('');
 console.log(`    ${code}`);
 console.log('');
 console.log(`Max devices: ${maxDevices}`);
+console.log(`Label: ${label || '(none)'}`);
 console.log('');
 console.log('Run this command to activate the invite:');
 console.log('');

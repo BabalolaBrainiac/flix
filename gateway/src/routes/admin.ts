@@ -3,6 +3,23 @@ import { generateSecureToken, sha256Hex } from '../crypto';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
+// Short admin-facing tag on an invite (e.g. "qa", "users-batch-1"). Kept to a
+// safe character set since it is only ever handled through parameterized
+// queries here, but the same string is also embedded directly into raw SQL
+// by gateway/scripts/create-invite.mjs - the restriction has to hold there.
+const LABEL_PATTERN = /^[A-Za-z0-9 ._-]{1,40}$/;
+
+// Returns the trimmed label, null when none was given, or 'invalid' when one
+// was given but does not match LABEL_PATTERN - the caller turns that into a
+// 400 rather than silently dropping what the admin typed.
+function readLabel(body: any): string | null | 'invalid' {
+  if (typeof body.label !== 'string' || body.label.trim() === '') {
+    return null;
+  }
+  const trimmed = body.label.trim();
+  return LABEL_PATTERN.test(trimmed) ? trimmed : 'invalid';
+}
+
 // Confirms the request carries the admin secret. Returns null when it is valid,
 // or a 401 response when it is missing or wrong. The comparison hashes both
 // sides first, so it runs in constant time and does not leak the secret through
@@ -48,28 +65,48 @@ export async function handleAdminCreateInvite(request: Request, env: Env): Promi
     body.max_devices <= 100
       ? body.max_devices
       : 1;
+  const label = readLabel(body);
+  if (label === 'invalid') {
+    return Response.json(
+      { error: 'label may only use letters, digits, spaces, dot, underscore, and hyphen (1-40 characters)' },
+      { status: 400 },
+    );
+  }
 
+  const created = await createInvite(env, maxDevices, label);
+  if (!created) {
+    return Response.json({ error: 'Failed to create invite' }, { status: 500 });
+  }
+  return Response.json(created);
+}
+
+// Shared by create and regenerate: makes one invite row and returns the raw
+// code alongside it. The code is never persisted - only its hash is.
+async function createInvite(
+  env: Env,
+  maxDevices: number,
+  label: string | null,
+): Promise<{ code: string; max_devices: number; label: string | null; created_at: number } | null> {
   const code = generateSecureToken(32);
   const codeHash = await sha256Hex(code);
   const now = Date.now();
 
   const result = await env.DB.prepare(
-    'INSERT INTO invites (code_hash, created_at, max_devices, redeemed_count, is_revoked) VALUES (?, ?, ?, 0, 0)'
+    'INSERT INTO invites (code_hash, created_at, max_devices, redeemed_count, is_revoked, label) VALUES (?, ?, ?, 0, 0, ?)'
   )
-    .bind(codeHash, now, maxDevices)
+    .bind(codeHash, now, maxDevices, label)
     .run();
 
   if (!result.success) {
-    return Response.json({ error: 'Failed to create invite' }, { status: 500 });
+    return null;
   }
-
-  return Response.json({ code, max_devices: maxDevices, created_at: now });
+  return { code, max_devices: maxDevices, label, created_at: now };
 }
 
 // Lists invites. Never returns a code, only the hash prefix and counters.
 export async function handleAdminListInvites(env: Env): Promise<Response> {
   const rows = await env.DB.prepare(
-    'SELECT code_hash, created_at, max_devices, redeemed_count, is_revoked FROM invites ORDER BY created_at DESC LIMIT 200'
+    'SELECT code_hash, created_at, max_devices, redeemed_count, is_revoked, label FROM invites ORDER BY created_at DESC LIMIT 200'
   ).all<InviteRecord>();
 
   const now = Date.now();
@@ -80,6 +117,7 @@ export async function handleAdminListInvites(env: Env): Promise<Response> {
     redeemed_count: r.redeemed_count,
     is_revoked: r.is_revoked === 1,
     is_expired: now - r.created_at > SEVEN_DAYS_MS,
+    label: r.label,
   }));
   return Response.json({ invites });
 }
@@ -96,6 +134,44 @@ export async function handleAdminRevokeInvite(request: Request, env: Env): Promi
     .bind(prefix)
     .run();
   return Response.json({ revoked: result.meta.changes });
+}
+
+// Revokes the invite matching the prefix and creates a fresh replacement with
+// the same label and max-devices. There is no way to recover a lost code -
+// only its hash is ever stored - so this is the supported way to get a
+// working code again instead of the old one.
+export async function handleAdminRegenerateInvite(request: Request, env: Env): Promise<Response> {
+  const prefix = await readHashPrefix(request);
+  if (!prefix) {
+    return Response.json({ error: 'A hash prefix of at least 8 hex characters is required' }, { status: 400 });
+  }
+
+  const matches = await env.DB.prepare(
+    "SELECT code_hash, max_devices, label FROM invites WHERE code_hash LIKE ? || '%' LIMIT 2"
+  )
+    .bind(prefix)
+    .all<InviteRecord>();
+  const rows = matches.results || [];
+  if (rows.length === 0) {
+    return Response.json({ error: 'No invite matches that hash prefix' }, { status: 404 });
+  }
+  if (rows.length > 1) {
+    return Response.json({ error: 'That hash prefix matches more than one invite' }, { status: 400 });
+  }
+  const existing = rows[0];
+
+  const revoke = await env.DB.prepare('UPDATE invites SET is_revoked = 1 WHERE code_hash = ?')
+    .bind(existing.code_hash)
+    .run();
+  if (!revoke.success) {
+    return Response.json({ error: 'Failed to revoke the existing invite' }, { status: 500 });
+  }
+
+  const created = await createInvite(env, existing.max_devices, existing.label);
+  if (!created) {
+    return Response.json({ error: 'Revoked the old invite, but failed to create its replacement' }, { status: 500 });
+  }
+  return Response.json(created);
 }
 
 // Lists devices. Never returns a token, only the hash prefix and usage.
@@ -207,6 +283,7 @@ const ADMIN_HTML = `<!doctype html>
       <h2>Create invite</h2>
       <div class="row">
         <div><label for="max">Max devices</label><input id="max" type="number" value="1" min="1" max="100" /></div>
+        <div><label for="label">Label (optional)</label><input id="label" type="text" maxlength="40" placeholder="qa, users-batch-1" /></div>
         <button onclick="createInvite()">Create</button>
       </div>
       <div id="new-code" class="code-box" style="display:none"></div>
@@ -215,7 +292,7 @@ const ADMIN_HTML = `<!doctype html>
     <section>
       <h2>Invites</h2>
       <div class="toolbar"><button class="secondary" onclick="loadInvites()">Refresh</button></div>
-      <table><thead><tr><th>Hash</th><th>Devices</th><th>Used</th><th>Created</th><th>Status</th><th></th></tr></thead>
+      <table><thead><tr><th>Hash</th><th>Label</th><th>Devices</th><th>Used</th><th>Created</th><th>Status</th><th></th></tr></thead>
       <tbody id="invites"></tbody></table>
     </section>
 
@@ -262,31 +339,66 @@ const ADMIN_HTML = `<!doctype html>
   }
   function lock() { sessionStorage.removeItem('flix_admin'); location.reload(); }
 
+  // Renders a just-created or just-regenerated code with a Copy button. The
+  // code is never fetchable again after this render - it only ever exists in
+  // this API response, once.
+  function showCode(code, label) {
+    const box = document.getElementById('new-code');
+    box.style.display = 'block';
+    const labelLine = label ? '<br>Label: ' + esc(label) : '';
+    box.innerHTML = 'Invite code (shown once - copy it now):' + labelLine +
+      '<br><br><strong id="code-text">' + esc(code) + '</strong><br><br>' +
+      '<button class="secondary" onclick="copyCode()">Copy</button> ' +
+      '<span id="copy-status" class="muted"></span>';
+    box.dataset.code = code;
+  }
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(document.getElementById('new-code').dataset.code);
+      document.getElementById('copy-status').textContent = 'Copied.';
+    } catch (e) { document.getElementById('copy-status').textContent = 'Could not copy: ' + e.message; }
+  }
+
   async function createInvite() {
     const max = parseInt(document.getElementById('max').value, 10) || 1;
+    const label = document.getElementById('label').value.trim();
     try {
-      const r = await api('/invites', 'POST', { max_devices: max });
-      const box = document.getElementById('new-code');
-      box.style.display = 'block';
-      box.innerHTML = 'Invite code (shown once):<br><br><strong>' + esc(r.code) + '</strong>';
+      const r = await api('/invites', 'POST', { max_devices: max, label: label || undefined });
+      showCode(r.code, r.label);
       loadInvites();
     } catch (e) { alert(e.message); }
+  }
+
+  function inviteRow(i) {
+    const status = i.is_revoked ? '<span class="pill bad">revoked</span>'
+      : i.is_expired ? '<span class="pill bad">expired</span>'
+      : '<span class="pill ok">active</span>';
+    const revokeBtn = i.is_revoked ? '' :
+      '<button class="secondary" onclick="revokeInvite(\\'' + esc(i.hash) + '\\')">Revoke</button> ';
+    const regenBtn = '<button class="secondary" onclick="regenerateInvite(\\'' + esc(i.hash) + '\\')">Regenerate</button>';
+    return '<tr><td><code>' + esc(i.hash) + '</code></td><td>' + esc(i.label || '-') + '</td><td>' +
+      i.max_devices + '</td><td>' + i.redeemed_count + '</td><td>' + fmt(i.created_at) +
+      '</td><td>' + status + '</td><td>' + revokeBtn + regenBtn + '</td></tr>';
   }
 
   async function loadInvites() {
     try {
       const r = await api('/invites');
-      document.getElementById('invites').innerHTML = r.invites.map(i =>
-        '<tr><td><code>' + esc(i.hash) + '</code></td><td>' + i.max_devices + '</td><td>' + i.redeemed_count +
-        '</td><td>' + fmt(i.created_at) + '</td><td>' +
-        (i.is_revoked ? '<span class="pill bad">revoked</span>' : i.is_expired ? '<span class="pill bad">expired</span>' : '<span class="pill ok">active</span>') +
-        '</td><td>' + (i.is_revoked ? '' : '<button class="secondary" onclick="revokeInvite(\\'' + esc(i.hash) + '\\')">Revoke</button>') + '</td></tr>'
-      ).join('') || '<tr><td colspan="6" class="muted">No invites.</td></tr>';
+      document.getElementById('invites').innerHTML =
+        r.invites.map(inviteRow).join('') || '<tr><td colspan="7" class="muted">No invites.</td></tr>';
     } catch (e) { if (e.message === 'unauthorized') lock(); }
   }
   async function revokeInvite(hash) {
     if (!confirm('Revoke invite ' + hash + '?')) return;
     try { await api('/invites/revoke', 'POST', { hash_prefix: hash }); loadInvites(); } catch (e) { alert(e.message); }
+  }
+  async function regenerateInvite(hash) {
+    if (!confirm('Revoke ' + hash + ' and create a fresh replacement with the same label and max devices?')) return;
+    try {
+      const r = await api('/invites/regenerate', 'POST', { hash_prefix: hash });
+      showCode(r.code, r.label);
+      loadInvites();
+    } catch (e) { alert(e.message); }
   }
 
   async function loadDevices() {

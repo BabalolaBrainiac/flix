@@ -151,6 +151,7 @@ describe('Gateway Invite Redemption', () => {
       max_devices: 1,
       redeemed_count: 0,
       is_revoked: 0,
+      label: null,
     };
 
     const mockDB: any = {
@@ -190,6 +191,7 @@ describe('Gateway Invite Redemption', () => {
       max_devices: 1,
       redeemed_count: 0,
       is_revoked: 0,
+      label: null,
     };
 
     const mockDB: any = {
@@ -226,6 +228,7 @@ describe('Gateway Invite Redemption', () => {
       max_devices: 1,
       redeemed_count: 1,
       is_revoked: 0,
+      label: null,
     };
 
     const mockDB: any = {
@@ -260,6 +263,7 @@ describe('Gateway Invite Redemption', () => {
       max_devices: 1,
       redeemed_count: 0,
       is_revoked: 0,
+      label: null,
     };
 
     const mockDB: any = {
@@ -354,7 +358,7 @@ describe('Gateway Fetch Handler Hardening', () => {
       'CREATE TABLE devices (token_hash TEXT PRIMARY KEY, invite_code_hash TEXT, created_at INTEGER, last_used_at INTEGER, is_revoked INTEGER DEFAULT 0, request_count INTEGER DEFAULT 0);'
     );
     db.exec(
-      'CREATE TABLE invites (code_hash TEXT PRIMARY KEY, created_at INTEGER, max_devices INTEGER, redeemed_count INTEGER DEFAULT 0, is_revoked INTEGER DEFAULT 0);'
+      'CREATE TABLE invites (code_hash TEXT PRIMARY KEY, created_at INTEGER, max_devices INTEGER, redeemed_count INTEGER DEFAULT 0, is_revoked INTEGER DEFAULT 0, label TEXT);'
     );
 
     const DB: any = {
@@ -448,7 +452,7 @@ describe('Gateway Admin API', () => {
       'CREATE TABLE rate_limits (key TEXT PRIMARY KEY, window_start INTEGER NOT NULL, count INTEGER NOT NULL);'
     );
     db.exec(
-      'CREATE TABLE invites (code_hash TEXT PRIMARY KEY, created_at INTEGER, max_devices INTEGER, redeemed_count INTEGER DEFAULT 0, is_revoked INTEGER DEFAULT 0);'
+      'CREATE TABLE invites (code_hash TEXT PRIMARY KEY, created_at INTEGER, max_devices INTEGER, redeemed_count INTEGER DEFAULT 0, is_revoked INTEGER DEFAULT 0, label TEXT);'
     );
     db.exec(
       'CREATE TABLE devices (token_hash TEXT PRIMARY KEY, invite_code_hash TEXT, created_at INTEGER, last_used_at INTEGER, is_revoked INTEGER DEFAULT 0, request_count INTEGER DEFAULT 0);'
@@ -535,5 +539,62 @@ describe('Gateway Admin API', () => {
     );
     const rev: any = await revoked.json();
     expect(rev.revoked).toBe(1);
+  });
+
+  it('rejects a label with characters outside the safe set', async () => {
+    const env = sqliteAdminEnv('s3cret');
+    const res = await worker.fetch(
+      new Request('https://gateway/v1/admin/invites', {
+        method: 'POST',
+        headers: { ...admin('s3cret'), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_devices: 1, label: "qa'; DROP TABLE invites; --" }),
+      }),
+      env,
+      ctx
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('regenerates an invite: revokes the old one, keeps its label and max_devices on the new one', async () => {
+    const env = sqliteAdminEnv('s3cret');
+    const created = await worker.fetch(
+      new Request('https://gateway/v1/admin/invites', {
+        method: 'POST',
+        headers: { ...admin('s3cret'), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_devices: 3, label: 'qa' }),
+      }),
+      env,
+      ctx
+    );
+    const createdBody: any = await created.json();
+    expect(createdBody.label).toBe('qa');
+
+    const listedBefore: any = await (
+      await worker.fetch(new Request('https://gateway/v1/admin/invites', { headers: admin('s3cret') }), env, ctx)
+    ).json();
+    const oldHash = listedBefore.invites[0].hash;
+
+    const regenerated = await worker.fetch(
+      new Request('https://gateway/v1/admin/invites/regenerate', {
+        method: 'POST',
+        headers: { ...admin('s3cret'), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hash_prefix: oldHash }),
+      }),
+      env,
+      ctx
+    );
+    expect(regenerated.status).toBe(200);
+    const regeneratedBody: any = await regenerated.json();
+    expect(regeneratedBody.code).toMatch(/^[0-9a-f]{64}$/);
+    expect(regeneratedBody.code).not.toBe(createdBody.code);
+    expect(regeneratedBody.label).toBe('qa');
+    expect(regeneratedBody.max_devices).toBe(3);
+
+    const listedAfter: any = await (
+      await worker.fetch(new Request('https://gateway/v1/admin/invites', { headers: admin('s3cret') }), env, ctx)
+    ).json();
+    expect(listedAfter.invites.length).toBe(2);
+    const old = listedAfter.invites.find((i: any) => i.hash === oldHash);
+    expect(old.is_revoked).toBe(true);
   });
 });

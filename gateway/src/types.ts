@@ -16,6 +16,9 @@ export interface InviteRecord {
   max_devices: number;
   redeemed_count: number;
   is_revoked: number;
+  // Short admin-facing tag (e.g. "qa", "users-batch-1"). Never shown to the
+  // person redeeming the invite - purely for the admin's own bookkeeping.
+  label: string | null;
 }
 
 export interface DeviceRecord {

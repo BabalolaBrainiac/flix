@@ -9,6 +9,7 @@ import {
   handleAdminCreateInvite,
   handleAdminListInvites,
   handleAdminRevokeInvite,
+  handleAdminRegenerateInvite,
   handleAdminListDevices,
   handleAdminRevokeDevice,
 } from './routes/admin';
@@ -120,6 +121,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     }
     if (url.pathname === '/v1/admin/invites/revoke' && request.method === 'POST') {
       return await handleAdminRevokeInvite(request, env);
+    }
+    if (url.pathname === '/v1/admin/invites/regenerate' && request.method === 'POST') {
+      return await handleAdminRegenerateInvite(request, env);
     }
     if (url.pathname === '/v1/admin/devices' && request.method === 'GET') {
       return await handleAdminListDevices(env);

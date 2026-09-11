@@ -6,8 +6,11 @@
 //!
 //! Every check drives the browser-preview playback path over plain HTTP, so
 //! no media player (VLC, mpv, or otherwise) is installed or launched.
+//! Playback is redirected to a fixed, isolated directory via
+//! FLIX_PLAYBACK_DIR (see src/config.rs), so this never touches a real
+//! user's data and can run safely on any machine, not just CI.
 //!
-//! Usage: qa_check --app <path-to-flix-desktop> [--force-local]
+//! Usage: qa_check --app <path-to-flix-desktop>
 
 use anyhow::{bail, Context, Result};
 use librqbit::{create_torrent, CreateTorrentOptions};
@@ -45,19 +48,19 @@ async fn run() -> Result<()> {
         arg_value(&args, "--app").context("Usage: qa_check --app <path-to-flix-desktop>")?,
     );
     let invite_code = std::env::var("QA_INVITE_CODE").context("QA_INVITE_CODE must be set")?;
-    if std::env::var("CI").is_err() && !args.iter().any(|a| a == "--force-local") {
-        bail!(
-            "This check copies fixtures into the real Flix download directory \
-             (there is no override for it) and refuses to run outside CI. \
-             Pass --force-local only on a throwaway machine or account you do not mind polluting."
-        );
-    }
 
     let work_dir = std::env::current_dir()?.join("target").join("qa-run");
     let fixtures_dir = work_dir.join("fixtures");
     let torrents_dir = work_dir.join("torrents");
+    // Every real user leaves FLIX_PLAYBACK_DIR unset, so playback writes into
+    // a fresh, auto-cleaned-up temp directory it never shares with anything
+    // else (see src/config.rs, PlaybackCache). Setting it here points every
+    // /api/play in this run at one fixed directory this process fully owns,
+    // so pre-placed fixtures land exactly where librqbit will look for them.
+    let playback_dir = work_dir.join("playback");
     std::fs::create_dir_all(&fixtures_dir)?;
     std::fs::create_dir_all(&torrents_dir)?;
+    std::fs::create_dir_all(&playback_dir)?;
 
     println!("Generating local test fixtures...");
     let fixtures = generate_fixtures(&fixtures_dir)?;
@@ -68,16 +71,13 @@ async fn run() -> Result<()> {
     let show_torrent =
         build_torrent(&fixtures.show_dir, &torrents_dir.join("show.torrent")).await?;
 
-    println!("Locating the app download directory...");
-    let download_dir = find_download_dir(&app_path)?;
-    println!("download_dir = {}", download_dir.display());
-    copy_file_into(&fixtures.movie, &download_dir)?;
-    copy_file_into(&fixtures.anime, &download_dir)?;
-    copy_dir_into(&fixtures.show_dir, &download_dir)?;
-    log_placed_fixtures(&download_dir)?;
+    copy_file_into(&fixtures.movie, &playback_dir)?;
+    copy_file_into(&fixtures.anime, &playback_dir)?;
+    copy_dir_into(&fixtures.show_dir, &playback_dir)?;
+    log_placed_fixtures(&playback_dir)?;
 
     println!("Starting flix-desktop...");
-    let (mut child, credential) = start_app(&app_path).await?;
+    let (mut child, credential) = start_app(&app_path, &playback_dir).await?;
     let client = reqwest::Client::new();
 
     let outcome = drive_checks(
@@ -257,9 +257,9 @@ fn run_ffmpeg(base: &[&str], extra: &[&str], output: &Path) -> Result<()> {
 }
 
 // Builds a `.torrent` file with the same call Flix's own session code uses,
-// so the file layout it expects under the download directory matches
-// exactly: a single input file downloads to `<download_dir>/<basename>`, and
-// an input directory downloads to `<download_dir>/<dir basename>/...`.
+// so the file layout it expects under the playback directory matches
+// exactly: a single input file downloads to `<playback_dir>/<basename>`, and
+// an input directory downloads to `<playback_dir>/<dir basename>/...`.
 async fn build_torrent(input: &Path, output: &Path) -> Result<PathBuf> {
     let torrent = create_torrent(input, CreateTorrentOptions::default())
         .await
@@ -269,37 +269,15 @@ async fn build_torrent(input: &Path, output: &Path) -> Result<PathBuf> {
     Ok(output.to_path_buf())
 }
 
-fn find_download_dir(app_path: &Path) -> Result<PathBuf> {
-    let output = StdCommand::new(app_path)
-        .arg("--check")
-        .output()
-        .with_context(|| format!("Failed to run {} --check", app_path.display()))?;
-    if !output.status.success() {
-        bail!(
-            "{} --check failed: {}",
-            app_path.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let line = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("Download directory: "))
-        .with_context(|| {
-            format!("Could not read the download directory from --check output:\n{stdout}")
-        })?;
-    Ok(PathBuf::from(line.trim()))
-}
-
-fn copy_file_into(file: &Path, download_dir: &Path) -> Result<()> {
+fn copy_file_into(file: &Path, playback_dir: &Path) -> Result<()> {
     let name = file.file_name().context("fixture file has no name")?;
-    std::fs::copy(file, download_dir.join(name))?;
+    std::fs::copy(file, playback_dir.join(name))?;
     Ok(())
 }
 
-fn copy_dir_into(dir: &Path, download_dir: &Path) -> Result<()> {
+fn copy_dir_into(dir: &Path, playback_dir: &Path) -> Result<()> {
     let name = dir.file_name().context("fixture directory has no name")?;
-    let target = download_dir.join(name);
+    let target = playback_dir.join(name);
     std::fs::create_dir_all(&target)?;
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -308,10 +286,9 @@ fn copy_dir_into(dir: &Path, download_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-// Diagnostic: confirms exactly what landed on disk, with sizes, right
-// before flix-desktop starts. Helps tell a path mismatch apart from a
-// librqbit-side verification issue when a run fails.
-fn log_placed_fixtures(download_dir: &Path) -> Result<()> {
+// Confirms exactly what landed on disk, with sizes, right before
+// flix-desktop starts.
+fn log_placed_fixtures(playback_dir: &Path) -> Result<()> {
     fn walk(dir: &Path, depth: usize) -> Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
@@ -328,19 +305,19 @@ fn log_placed_fixtures(download_dir: &Path) -> Result<()> {
         }
         Ok(())
     }
-    println!("Fixtures placed under {}:", download_dir.display());
-    walk(download_dir, 1)
+    println!("Fixtures placed under {}:", playback_dir.display());
+    walk(playback_dir, 1)
 }
 
 // The app prints its local bootstrap URL once on startup. A background task
 // keeps draining stdout after that so the child never blocks on a full pipe.
-async fn start_app(app_path: &Path) -> Result<(Child, String)> {
+async fn start_app(app_path: &Path, playback_dir: &Path) -> Result<(Child, String)> {
     let mut child = Command::new(app_path)
         .args(["--no-open", "--port", &PORT.to_string()])
-        // Overrides the app's default "flix=info,warn" filter so a failed
-        // run's logs show real librqbit state (peers, verified bytes,
-        // piece checks) instead of just the high-level pipeline outcome.
-        .env("RUST_LOG", "flix=debug,librqbit=debug")
+        // Makes every /api/play in this run write into playback_dir instead
+        // of a fresh temp directory, so the fixtures placed there ahead of
+        // time are exactly where librqbit looks (see src/config.rs).
+        .env("FLIX_PLAYBACK_DIR", playback_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -582,6 +559,27 @@ async fn check_tv_show(client: &reqwest::Client, credential: &str, torrent: &Pat
                 "season": 1,
                 "episode": 1,
                 "title": "QA Show Fixture",
+            },
+            // Without a queue_seed the coordinator has no episode queue to
+            // advance, so /api/next moves to the next file in the torrent
+            // but the reported `media` field (sourced from the queue, not
+            // the file) never updates. A real client always supplies one
+            // for a series; matching that is what makes this check
+            // faithful to production instead of just the file-level move.
+            "queue_seed": {
+                "catalog_item": {
+                    "id": "qa:show",
+                    "name": "QA Show Fixture",
+                    "media_type": "series",
+                    "release_info": null,
+                    "poster": null,
+                    "is_anime": false,
+                },
+                "episodes": [
+                    {"id": "ep1", "stream_id": "qa-show-s01e01", "title": "Episode 1", "season": 1, "episode": 1},
+                    {"id": "ep2", "stream_id": "qa-show-s01e02", "title": "Episode 2", "season": 1, "episode": 2},
+                ],
+                "current_episode_id": "ep1",
             },
             "magnet": torrent.to_string_lossy(),
         })),

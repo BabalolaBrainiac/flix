@@ -11,40 +11,81 @@ pub struct Config {
 /// Prefix for the temporary directory that holds a playback's downloaded data.
 const PLAYBACK_CACHE_PREFIX: &str = "flix-play-";
 
+/// Set to make every playback session write into this fixed directory
+/// instead of a fresh temporary one. Every real user leaves this unset, so
+/// playback keeps its normal ephemeral, auto-cleaned-up cache. It exists so
+/// an automated check can pre-place a complete file at a known path and
+/// have librqbit verify it locally, with no download and no player
+/// involved (see examples/qa_check.rs).
+const PLAYBACK_DIR_OVERRIDE_VAR: &str = "FLIX_PLAYBACK_DIR";
+
+enum CacheStorage {
+    Temporary(tempfile::TempDir),
+    Fixed(PathBuf),
+}
+
+impl CacheStorage {
+    fn path(&self) -> &Path {
+        match self {
+            CacheStorage::Temporary(dir) => dir.path(),
+            CacheStorage::Fixed(path) => path,
+        }
+    }
+}
+
 pub struct PlaybackCache {
     owner: Option<std::fs::File>,
-    directory: tempfile::TempDir,
+    storage: CacheStorage,
 }
 
 impl PlaybackCache {
     pub fn new() -> Result<Self> {
-        let directory = tempfile::Builder::new()
-            .prefix(PLAYBACK_CACHE_PREFIX)
-            .tempdir()
-            .context("Failed to create the temporary playback cache")?;
+        let storage = match std::env::var_os(PLAYBACK_DIR_OVERRIDE_VAR) {
+            Some(value) => {
+                let path = PathBuf::from(value);
+                std::fs::create_dir_all(&path)
+                    .context("Failed to create the FLIX_PLAYBACK_DIR override directory")?;
+                CacheStorage::Fixed(path)
+            }
+            None => {
+                let dir = tempfile::Builder::new()
+                    .prefix(PLAYBACK_CACHE_PREFIX)
+                    .tempdir()
+                    .context("Failed to create the temporary playback cache")?;
+                CacheStorage::Temporary(dir)
+            }
+        };
+        // `create` rather than `create_new`: a fresh temp directory never
+        // already has this file, and the fixed override directory is
+        // reused across sequential playbacks, each releasing the lock when
+        // its own PlaybackCache drops.
         let owner = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .create_new(true)
-            .open(directory.path().join("owner.lock"))?;
+            .create(true)
+            .truncate(false)
+            .open(storage.path().join("owner.lock"))?;
         owner
             .try_lock()
             .context("Failed to lock the playback cache")?;
         Ok(Self {
             owner: Some(owner),
-            directory,
+            storage,
         })
     }
 
     pub fn path(&self) -> &Path {
-        self.directory.path()
+        self.storage.path()
     }
 
     pub fn close(mut self) -> Result<()> {
         self.owner.take();
-        self.directory
-            .close()
-            .context("Failed to remove the temporary playback cache")
+        match self.storage {
+            CacheStorage::Temporary(dir) => dir
+                .close()
+                .context("Failed to remove the temporary playback cache"),
+            CacheStorage::Fixed(_) => Ok(()),
+        }
     }
 }
 

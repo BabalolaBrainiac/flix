@@ -64,6 +64,9 @@ pub struct RecommendCommand {
     pub min_rating: Option<f64>,
     #[serde(default)]
     pub since_year: Option<u32>,
+    /// Number of ranked results to skip. Discover pages with this value.
+    #[serde(default)]
+    pub offset: usize,
 }
 
 fn default_limit() -> usize {
@@ -96,6 +99,12 @@ pub struct EpisodesCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TitleLookupCommand {
+    pub catalog_id: String,
+    pub media_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EpisodeSummary {
     pub id: String,
     #[serde(default)]
@@ -112,7 +121,7 @@ impl EpisodeSummary {
         let ep = format!("S{:02}E{:02}", self.season, self.episode);
         match &self.title {
             Some(title) if !title.trim().is_empty() => format!("{} · {}", ep, title.trim()),
-            _ => format!("{} · Title unavailable", ep),
+            _ => ep,
         }
     }
 }
@@ -362,4 +371,204 @@ pub struct ReaderProgressSaveCommand {
     pub publication_id: String,
     pub chapter_id: String,
     pub page: usize,
+}
+
+// ---- Profiles, lists, and watch status ----
+
+fn default_avatar_key() -> String {
+    "amber".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateProfileCommand {
+    pub name: String,
+    #[serde(default = "default_avatar_key")]
+    pub avatar_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProfileCommand {
+    pub profile_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub avatar_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileIdCommand {
+    pub profile_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProfileSummary {
+    pub id: String,
+    pub name: String,
+    pub avatar_key: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl From<crate::profiles::Profile> for ProfileSummary {
+    fn from(profile: crate::profiles::Profile) -> Self {
+        Self {
+            id: profile.id,
+            name: profile.name,
+            avatar_key: profile.avatar_key,
+            created_at: profile.created_at,
+            updated_at: profile.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfilesResponse {
+    pub profiles: Vec<ProfileSummary>,
+    // The session's current profile, or None before it has been chosen at
+    // the picker (only possible when more than one profile exists).
+    pub active_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateListCommand {
+    pub profile_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListIdCommand {
+    pub list_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ListItemSummary {
+    pub catalog_id: String,
+    pub media_type: String,
+    pub added_at: i64,
+    pub title: Option<String>,
+    pub poster: Option<String>,
+    pub year: Option<i64>,
+    pub canonical_id: Option<String>,
+}
+
+impl From<crate::profiles::ListItem> for ListItemSummary {
+    fn from(item: crate::profiles::ListItem) -> Self {
+        Self {
+            catalog_id: item.catalog_id,
+            media_type: item.media_type,
+            added_at: item.added_at,
+            title: item.title,
+            poster: item.poster,
+            year: item.year,
+            canonical_id: item.canonical_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ListSummary {
+    pub id: String,
+    pub profile_id: String,
+    pub name: String,
+    pub created_at: i64,
+    pub items: Vec<ListItemSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListsResponse {
+    pub lists: Vec<ListSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddListItemCommand {
+    pub list_id: String,
+    pub catalog_id: String,
+    pub media_type: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub poster: Option<String>,
+    #[serde(default)]
+    pub year: Option<i64>,
+    /// The IMDb id of the same title, when the client knows it. It stops one
+    /// title from appearing twice under a `kitsu:` id and a `tt` id.
+    #[serde(default)]
+    pub canonical_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoveListItemCommand {
+    pub list_id: String,
+    pub catalog_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoveWatchStatusCommand {
+    pub profile_id: String,
+    pub catalog_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetWatchStatusCommand {
+    pub profile_id: String,
+    pub catalog_id: String,
+    /// `to_watch`, `in_progress`, or `watched`.
+    pub status: String,
+    #[serde(default)]
+    pub episode_id: Option<String>,
+    #[serde(default)]
+    pub resume_seconds: Option<i64>,
+    /// Only needed the first time a title gets a status (usually from the
+    /// add-to-list/set-status popover, which already has the catalog item's
+    /// name and poster on hand) - omit on a later call (e.g. from the
+    /// progress tracker) and the existing stored title/poster is kept.
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub poster: Option<String>,
+    /// `movie`, `series`, or `anime`. Same "only needed the first time" rule
+    /// as `title`/`poster` - needed to reopen this title directly from the
+    /// watch-status board without a text search.
+    #[serde(default)]
+    pub media_type: Option<String>,
+    #[serde(default)]
+    pub year: Option<i64>,
+    #[serde(default)]
+    pub canonical_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WatchStatusSummary {
+    pub catalog_id: String,
+    pub status: String,
+    pub episode_id: Option<String>,
+    pub resume_seconds: Option<i64>,
+    pub updated_at: i64,
+    pub title: Option<String>,
+    pub poster: Option<String>,
+    pub media_type: Option<String>,
+    pub year: Option<i64>,
+    pub canonical_id: Option<String>,
+}
+
+impl From<crate::profiles::WatchStatus> for WatchStatusSummary {
+    fn from(status: crate::profiles::WatchStatus) -> Self {
+        Self {
+            catalog_id: status.catalog_id,
+            status: status.status.as_str().to_string(),
+            episode_id: status.episode_id,
+            resume_seconds: status.resume_seconds,
+            updated_at: status.updated_at,
+            title: status.title,
+            poster: status.poster,
+            media_type: status.media_type,
+            year: status.year,
+            canonical_id: status.canonical_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchStatusResponse {
+    pub watch_status: Vec<WatchStatusSummary>,
 }

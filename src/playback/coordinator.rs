@@ -131,6 +131,15 @@ impl PlaybackCoordinator {
         self.snapshot_rx.clone()
     }
 
+    /// Forces the snapshot to an arbitrary value, bypassing real playback.
+    /// Test-only: lets other modules' tests (e.g. the profile-switch-during-
+    /// playback rule in `desktop::service`) exercise a non-`Idle` snapshot
+    /// without resolving a real torrent or launching a player.
+    #[cfg(test)]
+    pub(crate) fn force_snapshot_for_test(&self, snapshot: PlaybackSnapshot) {
+        let _ = self.snapshot_tx.send(snapshot);
+    }
+
     pub async fn register_stream_candidates(
         &self,
         streams: &[TorrentStream],

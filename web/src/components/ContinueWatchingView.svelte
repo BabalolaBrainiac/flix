@@ -4,7 +4,7 @@
   import { Square, SkipForward, HardDrive, Tv, Film } from 'lucide-svelte';
 
   export let playbackState: PlaybackSnapshot;
-  export let onNavigateToSearch: () => void;
+  export let onNavigateToDiscover: () => void;
   export let onStateChanged: () => void;
 
   let isAdvancing = false;
@@ -104,10 +104,10 @@
       <Film size={48} class="idle-icon" />
       <h2 class="idle-title">No Active Session</h2>
       <p class="idle-desc">
-        Select a movie, series, or anime from the search catalog to start playback.
+        Find a movie, series, or anime on Discover to start playback.
       </p>
-      <button class="jump-btn" on:click={onNavigateToSearch}>
-        Search Library
+      <button class="jump-btn" on:click={onNavigateToDiscover}>
+        Find Something to Watch
       </button>
     </div>
   {/if}
@@ -209,12 +209,12 @@
   }
 
   .control-btn.primary {
-    background: var(--accent-primary);
+    background: var(--action-fill);
     color: #fff;
   }
 
   .control-btn.primary:hover:not(:disabled) {
-    background: var(--accent-primary-hover);
+    background: var(--action-fill-hover);
   }
 
   .control-btn.danger {
@@ -251,7 +251,7 @@
   }
 
   .jump-btn {
-    background: var(--accent-primary);
+    background: var(--action-fill);
     color: #fff;
     padding: 8px 18px;
     border-radius: var(--radius-sm);
@@ -260,6 +260,6 @@
   }
 
   .jump-btn:hover {
-    background: var(--accent-primary-hover);
+    background: var(--action-fill-hover);
   }
 </style>

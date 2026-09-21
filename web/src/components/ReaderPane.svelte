@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { readerPages, readerGetProgress, readerSaveProgress, getToken } from '../lib/api';
+  import { readerPages, readerGetProgress, readerSaveProgress } from '../lib/api';
   import type { ReaderChapter, ReaderPublication } from '../lib/types';
   import { ArrowLeft, Loader2, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-svelte';
 
@@ -14,15 +14,27 @@
   let errorMsg = '';
   let pageCount = 0;
 
-  // Build an authenticated image URL by appending the token as a query param
-  // (the page endpoint accepts token via query or header).
-  function pageUrl(url: string): string {
-    const token = getToken();
-    if (token) {
-      const sep = url.includes('?') ? '&' : '?';
-      return `${url}${sep}token=${encodeURIComponent(token)}`;
+  let imageFailed = false;
+  let refreshedOnce = false;
+
+  // A page URL carries a signature that lasts 10 minutes. After a failure,
+  // ask for fresh URLs once. A second failure shows a message.
+  async function handleImageError() {
+    if (refreshedOnce) {
+      imageFailed = true;
+      return;
     }
-    return url;
+    refreshedOnce = true;
+    try {
+      pages = (await readerPages(chapter.id, publication.id)).pages;
+    } catch {
+      imageFailed = true;
+    }
+  }
+
+  function handleImageLoad() {
+    imageFailed = false;
+    refreshedOnce = false;
   }
 
   async function loadPages() {
@@ -76,7 +88,7 @@
       const idx = currentPage + i;
       if (idx < pageCount && pages[idx]) {
         const img = new Image();
-        img.src = pageUrl(pages[idx]);
+        img.src = pages[idx];
       }
     }
   }
@@ -130,6 +142,12 @@
       <span>Loading pages...</span>
     </div>
   {:else if pages.length > 0}
+    {#if imageFailed}
+      <div class="error-banner">
+        <AlertCircle size={16} />
+        <span>This page did not load. Press Chapters, then open the chapter again.</span>
+      </div>
+    {/if}
     <div class="page-container">
       <button
         class="nav-zone nav-left"
@@ -144,8 +162,10 @@
         {#if pages[currentPage]}
           <img
             class="page-image"
-            src={pageUrl(pages[currentPage])}
+            src={pages[currentPage]}
             alt="Page {currentPage + 1}"
+            on:load={handleImageLoad}
+            on:error={handleImageError}
           />
         {/if}
       </div>

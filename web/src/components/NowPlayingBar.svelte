@@ -112,32 +112,27 @@
 <style>
   .now-playing-bar {
     position: fixed;
-    bottom: 20px;
+    bottom: 24px;
     left: 50%;
     transform: translateX(-50%);
-    width: calc(100% - 40px);
+    width: calc(100% - 48px);
     max-width: 980px;
     z-index: 100;
     padding: 14px 24px;
     border-radius: var(--radius-lg);
-    background: var(--glass-bg);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
-    border: 1px solid var(--glass-border);
-    /* A colored left accent shows the state at a glance */
-    border-left: 4px solid var(--text-muted);
-    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.08);
-    transition: all var(--transition-smooth);
+    background: var(--modal-surface);
+    border: 1px solid var(--border-muted);
+    border-left: 3px solid var(--text-muted);
+    box-shadow: var(--shadow-lg);
+    transition: border-color var(--transition-smooth), background-color var(--transition-smooth);
   }
 
   .now-playing-bar.is-busy {
     border-left-color: var(--accent-primary);
-    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.65), 0 0 20px var(--accent-glow);
   }
 
   .now-playing-bar.is-playing {
     border-left-color: var(--status-green);
-    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.65), 0 0 20px var(--status-green-glow);
   }
 
   .now-playing-bar.is-failed {
@@ -241,16 +236,15 @@
   }
 
   .btn-stop {
-    background: rgba(229, 9, 20, 0.14);
-    color: #fca5a5;
-    border: 1px solid rgba(229, 9, 20, 0.35);
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.35);
   }
 
   .btn-stop:hover:not(:disabled) {
-    background: var(--accent-primary);
+    background: var(--status-red);
     color: #fff;
-    border-color: var(--accent-primary);
-    box-shadow: 0 2px 10px var(--accent-glow);
+    border-color: var(--status-red);
   }
 
   @keyframes spin {

@@ -7,10 +7,13 @@ use tempfile::TempDir;
 #[tokio::test]
 async fn browser_events_require_auth_and_reject_stale_sessions() {
     let root = TempDir::new().unwrap();
-    let server = DesktopServer::bind(DesktopService::new(Config {
-        download_dir: root.path().join("downloads"),
-        data_dir: root.path().join("data"),
-    }))
+    let server = DesktopServer::bind(
+        DesktopService::new(Config {
+            download_dir: root.path().join("downloads"),
+            data_dir: root.path().join("data"),
+        })
+        .unwrap(),
+    )
     .await
     .unwrap();
     let access_token = server.state.token.clone();
@@ -57,7 +60,7 @@ async fn rejects_api_requests_without_or_with_invalid_token() {
         download_dir: temp.path().join("downloads"),
         data_dir: temp.path().join("data"),
     };
-    let service = DesktopService::new(config);
+    let service = DesktopService::new(config).unwrap();
     let server = DesktopServer::bind(service).await.unwrap();
     let port = server.state.port;
     let token = server.state.token.clone();
@@ -123,7 +126,7 @@ async fn serves_embedded_static_assets_and_spa_fallback() {
         download_dir: temp.path().join("downloads"),
         data_dir: temp.path().join("data"),
     };
-    let service = DesktopService::new(config);
+    let service = DesktopService::new(config).unwrap();
     let server = DesktopServer::bind(service).await.unwrap();
     let port = server.state.port;
 
@@ -156,7 +159,7 @@ async fn recommend_endpoint_requires_auth() {
         download_dir: temp.path().join("downloads"),
         data_dir: temp.path().join("data"),
     };
-    let service = DesktopService::new(config);
+    let service = DesktopService::new(config).unwrap();
     let server = DesktopServer::bind(service).await.unwrap();
     let port = server.state.port;
     let token = server.state.token.clone();
@@ -201,7 +204,7 @@ async fn quit_endpoint_signals_graceful_shutdown() {
         download_dir: temp.path().join("downloads"),
         data_dir: temp.path().join("data"),
     };
-    let service = DesktopService::new(config);
+    let service = DesktopService::new(config).unwrap();
     let server = DesktopServer::bind(service).await.unwrap();
     let port = server.state.port;
     let token = server.state.token.clone();
@@ -234,4 +237,58 @@ async fn quit_endpoint_signals_graceful_shutdown() {
     // Server should shut down gracefully
     let join_res = tokio::time::timeout(std::time::Duration::from_secs(2), server_handle).await;
     assert!(join_res.is_ok());
+}
+
+#[tokio::test]
+async fn closing_the_last_browser_tab_stops_the_server_on_its_own() {
+    let temp = TempDir::new().unwrap();
+    let config = Config {
+        download_dir: temp.path().join("downloads"),
+        data_dir: temp.path().join("data"),
+    };
+    let service = DesktopService::new(config).unwrap();
+    let server = DesktopServer::bind(service).await.unwrap();
+    let port = server.state.port;
+    let access = server.state.token.clone();
+
+    let server_handle = tokio::spawn(async move {
+        let _ = server.run().await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::new();
+    let health_url = format!("http://127.0.0.1:{port}/api/health");
+
+    // Open the events stream a browser tab holds open, read its first
+    // message to confirm the connection is live, then drop it - the same
+    // signal the server gets when a tab closes.
+    let events = client
+        .get(format!("http://127.0.0.1:{port}/api/events"))
+        .bearer_auth(&access)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(events.status(), StatusCode::OK);
+    let mut stream = events.bytes_stream();
+    let _ = futures_util::StreamExt::next(&mut stream).await;
+    drop(stream);
+
+    assert_eq!(
+        client
+            .get(&health_url)
+            .bearer_auth(&access)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK,
+        "the server must not stop before its grace period has passed"
+    );
+
+    let join_res = tokio::time::timeout(std::time::Duration::from_secs(10), server_handle).await;
+    assert!(
+        join_res.is_ok(),
+        "the server must stop on its own once its last tab has been closed for a while"
+    );
+    assert!(client.get(&health_url).send().await.is_err());
 }

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Build and run the Flix desktop app locally, in one command.
+#
+# Usage:
+#   scripts/flix build         Build the web UI, then the release binary.
+#   scripts/flix run [args]    Run the already-built binary. Extra args pass
+#                              through, for example:
+#                                scripts/flix run --port 8912 --no-open
+#   scripts/flix dev [args]    build, then run. Default when no command is
+#                              given - this is what you want most of the time.
+#   scripts/flix quit          Ask a running instance to shut down.
+#
+# The web UI is embedded into the binary at compile time, so a change under
+# web/ needs a full "build" (not just "run") before it shows up.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+binary="$root/target/release/flix-desktop"
+
+usage() {
+  sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+build() {
+  echo "==> Building the web UI"
+  npm --prefix "$root/web" run build
+  echo "==> Building flix-desktop (release)"
+  cargo build --release --features web-ui --bin flix-desktop
+  echo "==> Built: $binary"
+}
+
+run() {
+  if [[ ! -x "$binary" ]]; then
+    echo "No build found at $binary. Run 'scripts/flix build' first." >&2
+    exit 1
+  fi
+  exec "$binary" "$@"
+}
+
+quit() {
+  echo "This script does not track a running instance's port or token, so it"
+  echo "cannot send it a quit request. Use one of these instead:"
+  echo "  - the \"Quit Flix\" entry in the app's own avatar menu"
+  echo "  - close its last browser tab (it stops itself a few seconds later)"
+}
+
+command="${1:-dev}"
+[[ $# -gt 0 ]] && shift
+
+case "$command" in
+  build)
+    build
+    ;;
+  run)
+    run "$@"
+    ;;
+  dev)
+    build
+    run "$@"
+    ;;
+  quit)
+    quit
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $command" >&2
+    usage
+    exit 1
+    ;;
+esac

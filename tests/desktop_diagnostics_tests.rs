@@ -59,7 +59,7 @@ async fn desktop_service_exposes_diagnostics() {
         data_dir: temp.path().join("data"),
     };
 
-    let service = DesktopService::new(config);
+    let service = DesktopService::new(config).unwrap();
     let guidance = service.vlc_guidance();
     assert!(!guidance.instructions.is_empty());
 

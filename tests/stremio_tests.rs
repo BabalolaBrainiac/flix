@@ -1,7 +1,7 @@
 use flix::stremio::{
     automatic_1080p_fallback, automatic_playback_candidates, build_magnet, catalog_url,
-    parse_catalog_response, parse_meta_response, parse_stream_response, parse_subtitle_response,
-    CatalogKind,
+    parse_catalog_response, parse_meta_response, parse_meta_summary, parse_stream_response,
+    parse_subtitle_response, CatalogKind,
 };
 use serde_json::json;
 
@@ -60,6 +60,39 @@ async fn downloads_an_anime_kitsu_english_subtitle() {
     .expect("English subtitle");
 
     assert!(std::fs::metadata(path).expect("subtitle metadata").len() > 0);
+}
+
+#[test]
+fn parses_a_title_summary_from_a_meta_response() {
+    let value = json!({
+        "meta": {
+            "id": "tt0111161",
+            "type": "movie",
+            "name": "The Shawshank Redemption",
+            "releaseInfo": "1994",
+            "poster": "https://images.metahub.space/poster/small/tt0111161/img",
+            "genres": ["Drama"],
+            "imdbRating": "9.3"
+        }
+    });
+
+    let item =
+        parse_meta_summary(value, "tt0111161", "movie", CatalogKind::Cinemeta).expect("summary");
+    assert_eq!(item.id, "tt0111161");
+    assert_eq!(item.media_type, "movie");
+    assert_eq!(item.name, "The Shawshank Redemption");
+    assert_eq!(item.release_info.as_deref(), Some("1994"));
+    assert_eq!(
+        item.poster.as_deref(),
+        Some("https://images.metahub.space/poster/small/tt0111161/img")
+    );
+    assert_eq!(item.imdb_rating.as_deref(), Some("9.3"));
+}
+
+#[test]
+fn refuses_a_meta_summary_with_no_title() {
+    let value = json!({ "meta": { "id": "tt1", "type": "movie" } });
+    assert!(parse_meta_summary(value, "tt1", "movie", CatalogKind::Cinemeta).is_err());
 }
 
 #[test]

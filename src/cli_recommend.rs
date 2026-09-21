@@ -132,6 +132,7 @@ pub async fn run(options: RecommendOptions) -> Result<Option<SearchSelection>> {
     let filter = RecommendFilter {
         min_rating: options.min_rating,
         since_year: options.since_year,
+        offset: 0,
         limit: options.limit,
     };
     let filtered = recommend::apply_filter(scored, &filter);

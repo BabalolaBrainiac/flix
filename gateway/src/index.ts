@@ -4,6 +4,21 @@ import { handleSubtitlesResolve } from './routes/subtitles';
 import { handleCatalogSearch, handleCatalogTitle, handleCatalogDiscover } from './routes/catalog';
 import { handleReaderSearch, handleReaderChapters } from './routes/reader';
 import {
+  handleListProfiles,
+  handleCreateProfile,
+  handleUpdateProfile,
+  handleDeleteProfile,
+  handleListLists,
+  handleCreateList,
+  handleDeleteList,
+  handleAddListItem,
+  handleRemoveListItem,
+  handleListWatchStatus,
+  handleSetWatchStatus,
+  handleRemoveWatchStatus,
+  handleListDeletions,
+} from './routes/profiles';
+import {
   requireAdmin,
   adminPageHtml,
   handleAdminCreateInvite,
@@ -99,6 +114,58 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   if (url.pathname === '/v1/reader/chapters' && request.method === 'GET') {
     return await handleReaderChapters(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles' && request.method === 'GET') {
+    return await handleListProfiles(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles' && request.method === 'POST') {
+    return await handleCreateProfile(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles/update' && request.method === 'POST') {
+    return await handleUpdateProfile(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles/delete' && request.method === 'POST') {
+    return await handleDeleteProfile(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles/lists' && request.method === 'GET') {
+    return await handleListLists(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles/lists' && request.method === 'POST') {
+    return await handleCreateList(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles/lists/delete' && request.method === 'POST') {
+    return await handleDeleteList(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles/lists/items' && request.method === 'POST') {
+    return await handleAddListItem(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles/lists/items/delete' && request.method === 'POST') {
+    return await handleRemoveListItem(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles/status' && request.method === 'GET') {
+    return await handleListWatchStatus(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles/status' && request.method === 'POST') {
+    return await handleSetWatchStatus(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles/status/delete' && request.method === 'POST') {
+    return await handleRemoveWatchStatus(request, env);
+  }
+
+  if (url.pathname === '/v1/profiles/deletions' && request.method === 'GET') {
+    return await handleListDeletions(request, env);
   }
 
   // Admin page. The HTML carries no secret; the page asks for it and sends it

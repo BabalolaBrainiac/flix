@@ -318,7 +318,7 @@
   .search-btn {
     padding: 0 24px;
     height: 48px;
-    background: var(--accent-primary);
+    background: var(--action-fill);
     color: #fff;
     font-weight: 600;
     border-radius: var(--radius-md);

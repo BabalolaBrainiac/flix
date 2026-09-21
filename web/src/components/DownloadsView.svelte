@@ -3,15 +3,17 @@
   import { getDownloads, addDownload, removeDownload } from '../lib/api';
   import type { DownloadEntrySummary } from '../lib/types';
   import { Download, RefreshCw, Plus, HardDrive, AlertCircle, Trash2 } from 'lucide-svelte';
+  import ConfirmationDialog from './ConfirmationDialog.svelte';
+  import { confirmationFor } from '../lib/confirmation';
 
   let entries: DownloadEntrySummary[] = [];
   let isLoading = false;
   let magnetInput = '';
   let isAdding = false;
   let removingHash: string | null = null;
+  let pendingDelete: { infoHash: string; name: string } | null = null;
 
   async function handleRemove(infoHash: string, name: string) {
-    if (!confirm(`Delete "${name}" and its downloaded files from disk?`)) return;
     removingHash = infoHash;
     try {
       const res = await removeDownload(infoHash);
@@ -21,6 +23,13 @@
     } finally {
       removingHash = null;
     }
+  }
+
+  function confirmRemove() {
+    if (!pendingDelete) return;
+    const { infoHash, name } = pendingDelete;
+    pendingDelete = null;
+    void handleRemove(infoHash, name);
   }
   let message = '';
   let isError = false;
@@ -120,7 +129,7 @@
             <button
               class="delete-btn"
               title="Delete download and files"
-              on:click={() => handleRemove(entry.info_hash, entry.display_name)}
+              on:click={() => (pendingDelete = { infoHash: entry.info_hash, name: entry.display_name })}
               disabled={removingHash === entry.info_hash}
             >
               <Trash2 size={16} />
@@ -137,6 +146,11 @@
     {/if}
   </div>
 </div>
+
+{#if pendingDelete}
+  {@const copy = confirmationFor('download', pendingDelete.name)}
+  <ConfirmationDialog {...copy} onCancel={() => (pendingDelete = null)} onConfirm={confirmRemove} />
+{/if}
 
 <style>
   .downloads-view {
@@ -215,7 +229,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: var(--accent-primary);
+    background: var(--action-fill);
     color: #fff;
     padding: 8px 16px;
     border-radius: var(--radius-sm);
@@ -224,7 +238,7 @@
   }
 
   .add-btn:hover:not(:disabled) {
-    background: var(--accent-primary-hover);
+    background: var(--action-fill-hover);
   }
 
   .add-btn:disabled {

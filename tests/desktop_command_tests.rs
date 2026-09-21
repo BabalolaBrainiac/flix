@@ -92,7 +92,7 @@ async fn desktop_service_initializes_with_idle_state_and_cleans_up() {
         download_dir: temp.path().join("downloads"),
         data_dir: temp.path().join("data"),
     };
-    let service = DesktopService::new(config);
+    let service = DesktopService::new(config).unwrap();
     let status = service.status().await.unwrap();
     assert_eq!(status.state, PlaybackState::Idle);
 

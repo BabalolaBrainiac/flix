@@ -1,4 +1,5 @@
 import type {
+  CatalogItemSummary,
   DownloadsResponse,
   EpisodesResponse,
   OperationAccepted,
@@ -14,6 +15,7 @@ import type {
   SearchResponse,
   SettingsResponse,
   StreamsResponse,
+  TitleRef,
 } from './types';
 
 let memoryToken: string | null = null;
@@ -50,6 +52,11 @@ export function getToken(): string | null {
   }
   return memoryToken;
 }
+
+// Extract the token from the URL or sessionStorage at module load time.
+// This prevents a race condition where an API call could fire before
+// the token is available.
+initToken();
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getToken();
@@ -143,6 +150,16 @@ export async function getEpisodes(itemId: string, isAnime: boolean): Promise<Epi
   return request('/api/episodes', {
     method: 'POST',
     body: JSON.stringify({ item_id: itemId, is_anime: isAnime }),
+  });
+}
+
+/** Looks up a title's name, poster, and year by catalog id. Used to fill in
+ * a list item or a watch status that was stored before this app captured
+ * titles. */
+export async function getTitleMeta(catalogId: string, mediaType: string): Promise<CatalogItemSummary> {
+  return request('/api/title', {
+    method: 'POST',
+    body: JSON.stringify({ catalog_id: catalogId, media_type: mediaType }),
   });
 }
 
@@ -280,5 +297,116 @@ export async function browserEvent(playbackId: string, event: import('./types').
     method: 'POST',
     body: JSON.stringify({ playback_id: playbackId, event, position_ms: positionMs }),
     signal: AbortSignal.timeout(10_000),
+  });
+}
+
+export async function getProfiles(): Promise<import('./types').ProfilesResponse> {
+  return request('/api/profiles');
+}
+
+export async function createProfile(name: string, avatarKey: string = 'amber'): Promise<import('./types').ProfileSummary> {
+  return request('/api/profiles', {
+    method: 'POST',
+    body: JSON.stringify({ name, avatar_key: avatarKey }),
+  });
+}
+
+export async function updateProfile(profileId: string, name?: string, avatarKey?: string): Promise<{ success: boolean }> {
+  return request('/api/profiles/update', {
+    method: 'POST',
+    body: JSON.stringify({ profile_id: profileId, name, avatar_key: avatarKey }),
+  });
+}
+
+export async function deleteProfile(profileId: string): Promise<{ success: boolean }> {
+  return request('/api/profiles/delete', {
+    method: 'POST',
+    body: JSON.stringify({ profile_id: profileId }),
+  });
+}
+
+export async function setActiveProfile(profileId: string): Promise<{ success: boolean }> {
+  return request('/api/profiles/active', {
+    method: 'POST',
+    body: JSON.stringify({ profile_id: profileId }),
+  });
+}
+
+export async function getLists(profileId: string): Promise<import('./types').ListsResponse> {
+  return request(`/api/profiles/lists?profile_id=${encodeURIComponent(profileId)}`);
+}
+
+export async function createList(profileId: string, name: string): Promise<{ success: boolean }> {
+  return request('/api/profiles/lists', {
+    method: 'POST',
+    body: JSON.stringify({ profile_id: profileId, name }),
+  });
+}
+
+export async function deleteList(listId: string): Promise<{ success: boolean }> {
+  return request('/api/profiles/lists/delete', {
+    method: 'POST',
+    body: JSON.stringify({ list_id: listId }),
+  });
+}
+
+export async function addListItem(listId: string, ref: TitleRef): Promise<{ success: boolean }> {
+  return request('/api/profiles/lists/items', {
+    method: 'POST',
+    body: JSON.stringify({
+      list_id: listId,
+      catalog_id: ref.catalogId,
+      media_type: ref.mediaType,
+      title: ref.title,
+      poster: ref.poster,
+      year: ref.year,
+      canonical_id: ref.canonicalId,
+    }),
+  });
+}
+
+export async function removeListItem(listId: string, catalogId: string): Promise<{ success: boolean }> {
+  return request('/api/profiles/lists/items/delete', {
+    method: 'POST',
+    body: JSON.stringify({ list_id: listId, catalog_id: catalogId }),
+  });
+}
+
+export async function getWatchStatus(profileId: string, status?: string): Promise<import('./types').WatchStatusResponse> {
+  let url = `/api/profiles/status?profile_id=${encodeURIComponent(profileId)}`;
+  if (status) {
+    url += `&status=${encodeURIComponent(status)}`;
+  }
+  return request(url);
+}
+
+export async function setWatchStatus(
+  profileId: string,
+  ref: TitleRef,
+  status: string,
+  episodeId?: string,
+  resumeSeconds?: number
+): Promise<{ success: boolean }> {
+  return request('/api/profiles/status', {
+    method: 'POST',
+    body: JSON.stringify({
+      profile_id: profileId,
+      catalog_id: ref.catalogId,
+      status,
+      episode_id: episodeId,
+      resume_seconds: resumeSeconds,
+      title: ref.title,
+      poster: ref.poster,
+      media_type: ref.mediaType,
+      year: ref.year,
+      canonical_id: ref.canonicalId,
+    }),
+  });
+}
+
+export async function removeWatchStatus(profileId: string, catalogId: string): Promise<{ success: boolean }> {
+  return request('/api/profiles/status/delete', {
+    method: 'POST',
+    body: JSON.stringify({ profile_id: profileId, catalog_id: catalogId }),
   });
 }

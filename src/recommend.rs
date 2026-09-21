@@ -22,7 +22,43 @@ pub struct ScoredItem {
 pub struct RecommendFilter {
     pub min_rating: Option<f64>,
     pub since_year: Option<u32>,
+    /// Number of filtered results to skip. A page of results uses it.
+    pub offset: usize,
     pub limit: usize,
+}
+
+/// Most rounds one Discover query may fetch. It caps the work one query can
+/// cause, however far a user pages.
+pub const MAX_ROUNDS: usize = 8;
+
+/// The ranked candidates of one Discover query. Each round adds the next page
+/// of every add-on catalog after the ones before it. A later round never moves
+/// an earlier item, so a page of results does not shift under the reader.
+#[derive(Debug, Clone, Default)]
+pub struct RecommendPool {
+    pub items: Vec<ScoredItem>,
+    pub rounds: usize,
+    pub exhausted: bool,
+}
+
+impl RecommendPool {
+    pub fn can_grow(&self) -> bool {
+        !self.exhausted && self.rounds < MAX_ROUNDS
+    }
+
+    /// Adds one round. Items the pool already holds are dropped. A round that
+    /// brings no new item ends the pool.
+    pub fn absorb(&mut self, round_items: Vec<ScoredItem>) {
+        let mut known: HashSet<String> = self.items.iter().map(|s| s.item.id.clone()).collect();
+        let before = self.items.len();
+        self.items.extend(
+            round_items
+                .into_iter()
+                .filter(|s| known.insert(s.item.id.clone())),
+        );
+        self.exhausted = self.items.len() == before;
+        self.rounds += 1;
+    }
 }
 
 /// Strategy for fetching anime catalog items based on genre support.
@@ -238,7 +274,7 @@ fn compute_text_match(item: &CatalogItem, resolved: &ResolvedKeywords) -> f64 {
     score
 }
 
-/// Apply post-scoring filters: min rating, since year, dedup, limit.
+/// Apply post-scoring filters: min rating, since year, dedup, offset, limit.
 pub fn apply_filter(scored: Vec<ScoredItem>, filter: &RecommendFilter) -> Vec<ScoredItem> {
     let mut seen_ids = HashSet::new();
     scored
@@ -260,6 +296,7 @@ pub fn apply_filter(scored: Vec<ScoredItem>, filter: &RecommendFilter) -> Vec<Sc
             }
             seen_ids.insert(si.item.id.clone())
         })
+        .skip(filter.offset)
         .take(filter.limit)
         .collect()
 }

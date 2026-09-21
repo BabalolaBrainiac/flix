@@ -2,8 +2,12 @@ pub mod commands;
 pub mod credentials;
 pub mod debug_report;
 pub mod gateway;
+pub mod poster_cache;
+pub mod profile_sync;
+pub mod progress_tracker;
 pub mod server;
 pub mod service;
+pub mod signed_url;
 pub mod types;
 
 pub use commands::*;

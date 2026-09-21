@@ -20,6 +20,7 @@ export interface RecommendCommand {
   limit?: number;
   min_rating?: number;
   since_year?: number;
+  offset?: number;
 }
 
 export interface RecommendItem {
@@ -260,4 +261,67 @@ export interface ReaderProgress {
 
 export interface ReaderProgressResponse {
   position: ReaderProgress | null;
+}
+
+export interface ProfileSummary {
+  id: string;
+  name: string;
+  avatar_key: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ProfilesResponse {
+  profiles: ProfileSummary[];
+  active_profile_id: string | null;
+}
+
+export interface ListItemSummary {
+  catalog_id: string;
+  media_type: string;
+  added_at: number;
+  title?: string | null;
+  poster?: string | null;
+  year?: number | null;
+  canonical_id?: string | null;
+}
+
+export interface ListSummary {
+  id: string;
+  profile_id: string;
+  name: string;
+  created_at: number;
+  items: ListItemSummary[];
+}
+
+export interface ListsResponse {
+  lists: ListSummary[];
+}
+
+export interface WatchStatusSummary {
+  catalog_id: string;
+  status: 'to_watch' | 'in_progress' | 'watched' | string;
+  episode_id: string | null;
+  resume_seconds: number | null;
+  updated_at: number;
+  title?: string | null;
+  poster?: string | null;
+  media_type?: string | null;
+  year?: number | null;
+  canonical_id?: string | null;
+}
+
+export interface WatchStatusResponse {
+  watch_status: WatchStatusSummary[];
+}
+
+/** What the app needs to know about a title to store it in a list or status. */
+export interface TitleRef {
+  catalogId: string;
+  mediaType: string;
+  title?: string | null;
+  poster?: string | null;
+  year?: number | null;
+  /** The IMDb id of the same title, when known. It joins a `kitsu:` id to a `tt` id. */
+  canonicalId?: string | null;
 }

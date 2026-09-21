@@ -3,12 +3,15 @@
   import { getSettings, quitApp } from '../lib/api';
   import type { SettingsResponse } from '../lib/types';
   import { RefreshCw, Folder, Tv, MessageSquare, Power, AlertTriangle, CheckCircle, ExternalLink } from 'lucide-svelte';
+  import ConfirmationDialog from './ConfirmationDialog.svelte';
+  import { confirmationFor } from '../lib/confirmation';
 
   let settings: SettingsResponse | null = null;
   let isLoading = false;
   let errorMsg = '';
   let isQuitting = false;
   let quitSuccess = false;
+  let confirmQuit = false;
 
   async function loadSettings() {
     isLoading = true;
@@ -23,9 +26,6 @@
   }
 
   async function handleQuit() {
-    if (!confirm('Are you sure you want to stop Flix Desktop and quit the background server?')) {
-      return;
-    }
     isQuitting = true;
     try {
       await quitApp();
@@ -35,6 +35,11 @@
     } finally {
       isQuitting = false;
     }
+  }
+
+  function confirmQuitApp() {
+    confirmQuit = false;
+    void handleQuit();
   }
 
   onMount(() => {
@@ -137,7 +142,7 @@
         <p class="quit-info">
           Stop active torrent sessions, release local network ports, and exit the Flix desktop process.
         </p>
-        <button class="quit-btn" on:click={handleQuit} disabled={isQuitting}>
+        <button class="quit-btn" on:click={() => (confirmQuit = true)} disabled={isQuitting}>
           <Power size={15} /> Quit Flix Desktop
         </button>
       </div>
@@ -148,6 +153,11 @@
     </div>
   {/if}
 </div>
+
+{#if confirmQuit}
+  {@const copy = confirmationFor('quit')}
+  <ConfirmationDialog {...copy} onCancel={() => (confirmQuit = false)} onConfirm={confirmQuitApp} />
+{/if}
 
 <style>
   .settings-view {

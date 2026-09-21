@@ -71,17 +71,17 @@ The desktop server binds only to `127.0.0.1`. Every API request requires a token
 
 Merging to `main` runs checks and builds installer artifacts. It does not publish a GitHub release. Publication requires the separate manual **Release** workflow.
 
-### Release 0.2.0
+### Release 0.3.0
 
-This release includes faster search results, original anime audio with English subtitles, playback cleanup, debug reports, and the browser player preview.
-The browser preview supports MP4, M4V, and WebM. Anime and MKV still require VLC or mpv.
+This release adds local profiles, custom lists, watch status, resume progress, and gateway synchronization.
+It also adds a simpler Discover interface, title pages, profile controls, and signed poster caching.
 
 The unsigned installers are `Flix-macOS-universal.dmg` and `Flix-Windows-x64-Setup.exe`.
 The macOS installer supports Apple silicon and Intel Macs. The Windows installer targets x64 systems.
 Installer packages contain the application. They do not contain activation keys, user files, or playback caches.
 
 The maintainer tests the macOS installer with a fresh activation before distribution.
-After package checks pass, run the manual **Release** workflow with version `v0.2.0` and the full commit SHA from `main`.
+After package checks pass, run the manual **Release** workflow with version `v0.3.0` and the full commit SHA from `main`.
 The workflow checks the source, builds both installers, and publishes the files with `SHA256SUMS.txt`.
 Users can download the installers from the [GitHub releases page](https://github.com/BabalolaBrainiac/flix/releases).
 

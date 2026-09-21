@@ -1,6 +1,6 @@
 [package]
 name = "flix"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "Torrent streamer with CLI, TUI, and desktop web UI. Searches Stremio catalogs, plays in mpv/VLC while downloading."
 license = "MIT"
@@ -36,6 +36,7 @@ rust-embed = { version = "8.5", features = ["mime-guess"] }
 mime_guess = "2.0"
 keyring = { version = "3.6.1", features = ["apple-native", "windows-native"] }
 zip = { version = "2", default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

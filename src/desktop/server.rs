@@ -41,6 +41,10 @@ pub struct ServerState {
     pub token: String,
     pub port: u16,
     pub shutdown_tx: broadcast::Sender<()>,
+    /// How many browser tabs currently hold the `/api/events` stream open.
+    /// Used to shut the app down on its own once the last tab closes - see
+    /// `ClientGuard`.
+    active_clients: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 pub struct DesktopServer {
@@ -74,6 +78,7 @@ impl DesktopServer {
             token,
             port,
             shutdown_tx,
+            active_clients: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
         Ok(Self {
@@ -98,6 +103,12 @@ impl DesktopServer {
         let app = create_router(self.state.clone());
         let mut shutdown_rx = self.state.shutdown_tx.subscribe();
         let coordinator = self.state.service.coordinator();
+
+        crate::desktop::progress_tracker::spawn(
+            Arc::clone(&coordinator),
+            self.state.service.profiles(),
+            self.state.service.current_profile_id_handle(),
+        );
 
         axum::serve(self.listener, app)
             .with_graceful_shutdown(async move {
@@ -125,6 +136,7 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/search", post(handle_search))
         .route("/api/recommend", post(handle_recommend))
         .route("/api/episodes", post(handle_episodes))
+        .route("/api/title", post(handle_title_lookup))
         .route("/api/streams", post(handle_streams))
         .route("/api/play", post(handle_play))
         .route("/api/browser/event", post(handle_browser_event))
@@ -139,11 +151,37 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/reader/chapters", post(handle_reader_chapters))
         .route("/api/reader/pages", post(handle_reader_pages))
         .route("/api/reader/page", get(handle_reader_page))
+        .route("/api/poster", get(handle_poster))
         .route(
             "/api/reader/progress",
             get(handle_reader_progress_get).post(handle_reader_progress_save),
         )
         .route("/api/quit", post(handle_quit))
+        .route(
+            "/api/profiles",
+            get(handle_get_profiles).post(handle_create_profile),
+        )
+        .route("/api/profiles/update", post(handle_update_profile))
+        .route("/api/profiles/delete", post(handle_delete_profile))
+        .route("/api/profiles/active", post(handle_set_active_profile))
+        .route(
+            "/api/profiles/lists",
+            get(handle_get_lists).post(handle_create_list),
+        )
+        .route("/api/profiles/lists/delete", post(handle_delete_list))
+        .route("/api/profiles/lists/items", post(handle_add_list_item))
+        .route(
+            "/api/profiles/lists/items/delete",
+            post(handle_remove_list_item),
+        )
+        .route(
+            "/api/profiles/status",
+            get(handle_get_watch_status).post(handle_set_watch_status),
+        )
+        .route(
+            "/api/profiles/status/delete",
+            post(handle_remove_watch_status),
+        )
         .fallback(handle_static_or_spa)
         .with_state(state)
 }
@@ -254,6 +292,57 @@ async fn handle_health(
     })))
 }
 
+/// How long this process waits after its last browser tab closes before it stops.
+/// Five seconds gives enough time for browser page reloads.
+const AUTO_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Held for as long as one browser tab holds an events connection.
+/// When the last tab drops, it schedules an auto-shutdown check.
+struct ClientGuard {
+    active_clients: Arc<std::sync::atomic::AtomicUsize>,
+    shutdown_tx: broadcast::Sender<()>,
+    coordinator: Arc<crate::playback::PlaybackCoordinator>,
+}
+
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        let remaining = self
+            .active_clients
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+            - 1;
+        if remaining != 0 {
+            return;
+        }
+        let active_clients = Arc::clone(&self.active_clients);
+        let shutdown_tx = self.shutdown_tx.clone();
+        let coordinator = Arc::clone(&self.coordinator);
+        tokio::spawn(async move {
+            tokio::time::sleep(AUTO_SHUTDOWN_GRACE).await;
+            loop {
+                if active_clients.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                    return;
+                }
+                let snapshot = coordinator.snapshot();
+                let external_playing = matches!(
+                    snapshot,
+                    crate::playback::PlaybackSnapshot::Playing { .. }
+                        | crate::playback::PlaybackSnapshot::LaunchingPlayer { .. }
+                );
+                if !external_playing {
+                    tracing::info!(
+                        "No browser tab has been open for {}s - stopping gracefully.",
+                        AUTO_SHUTDOWN_GRACE.as_secs()
+                    );
+                    let _ = coordinator.stop().await;
+                    let _ = shutdown_tx.send(());
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        });
+    }
+}
+
 async fn handle_events(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -262,17 +351,26 @@ async fn handle_events(
     validate_query_or_header_token(&headers, query.get("token").map(String::as_str), &state)
         .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
 
-    let rx = { state.service.coordinator().subscribe() };
+    let coordinator = state.service.coordinator();
+    let rx = coordinator.subscribe();
+    state
+        .active_clients
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let guard = ClientGuard {
+        active_clients: Arc::clone(&state.active_clients),
+        shutdown_tx: state.shutdown_tx.clone(),
+        coordinator,
+    };
 
     let initial = rx.borrow().clone();
     let shutdown = state.shutdown_tx.subscribe();
     let stream = stream::unfold(
-        (rx, Some(initial), shutdown),
-        |(mut rx, initial, mut shutdown)| async move {
+        (rx, Some(initial), shutdown, guard),
+        |(mut rx, initial, mut shutdown, guard)| async move {
             if let Some(first) = initial {
                 let data = serde_json::to_string(&first).unwrap_or_default();
                 let event = Event::default().data(data);
-                return Some((Ok(event), (rx, None, shutdown)));
+                return Some((Ok(event), (rx, None, shutdown, guard)));
             }
             let changed = tokio::select! {
                 biased;
@@ -283,7 +381,7 @@ async fn handle_events(
                 let val = rx.borrow().clone();
                 let data = serde_json::to_string(&val).unwrap_or_default();
                 let event = Event::default().data(data);
-                Some((Ok(event), (rx, None, shutdown)))
+                Some((Ok(event), (rx, None, shutdown, guard)))
             } else {
                 None
             }
@@ -390,6 +488,25 @@ async fn handle_episodes(
             StatusCode::INTERNAL_SERVER_ERROR,
             "EPISODES_ERROR",
             "Failed to retrieve episode list",
+            true,
+        )
+    })?;
+    Ok(Json(res))
+}
+
+async fn handle_title_lookup(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::desktop::types::TitleLookupCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.title_lookup(&command).await.map_err(|e| {
+        tracing::warn!("title lookup error: {:#}", e);
+        api_error(
+            StatusCode::NOT_FOUND,
+            "TITLE_LOOKUP_ERROR",
+            "Failed to look up title",
             true,
         )
     })?;
@@ -682,15 +799,28 @@ async fn handle_reader_page(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, Response> {
-    validate_origin_and_token(&headers, &state)
-        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
-
     let chapter_id = params.get("chapter_id").cloned().unwrap_or_default();
     let manga_id = params.get("manga_id").cloned().unwrap_or_default();
     let index: usize = params
         .get("index")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+
+    // An <img> tag cannot send a header, so a page URL carries a signature
+    // for this one page. The master token is never accepted in the query.
+    let signed = params
+        .get("exp")
+        .and_then(|value| value.parse::<u64>().ok())
+        .zip(params.get("sig"))
+        .is_some_and(|(expires_at, signature)| {
+            state
+                .service
+                .verify_reader_page(&chapter_id, &manga_id, index, expires_at, signature)
+        });
+    if !signed {
+        validate_origin_and_token(&headers, &state)
+            .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    }
 
     let (data, mime) = state
         .service
@@ -706,7 +836,52 @@ async fn handle_reader_page(
             )
         })?;
 
-    Ok(([(header::CONTENT_TYPE, mime)], data))
+    Ok((
+        [
+            (header::CONTENT_TYPE, mime),
+            (header::CACHE_CONTROL, "private, max-age=600".to_string()),
+        ],
+        data,
+    ))
+}
+
+async fn handle_poster(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, Response> {
+    let upstream = params.get("u").cloned().unwrap_or_default();
+    let signed = params
+        .get("exp")
+        .and_then(|value| value.parse::<u64>().ok())
+        .zip(params.get("sig"))
+        .is_some_and(|(expires_at, signature)| {
+            state
+                .service
+                .verify_poster(&upstream, expires_at, signature)
+        });
+    if !signed {
+        validate_origin_and_token(&headers, &state)
+            .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    }
+
+    let (data, mime) = state.service.poster(&upstream).await.map_err(|e| {
+        tracing::warn!("poster error: {:#}", e);
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            "POSTER_ERROR",
+            "Failed to load poster",
+            true,
+        )
+    })?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, mime.to_string()),
+            (header::CACHE_CONTROL, "private, max-age=86400".to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        ],
+        data,
+    ))
 }
 
 async fn handle_reader_progress_get(
@@ -749,6 +924,276 @@ async fn handle_reader_progress_save(
             false,
         )
     })?;
+    Ok(Json(json!({ "success": true })))
+}
+
+// ---- Profiles, lists, and watch status ----
+
+async fn handle_get_profiles(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.list_profiles().await.map_err(|e| {
+        tracing::error!("list profiles error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "PROFILES_ERROR",
+            "Failed to list profiles",
+            true,
+        )
+    })?;
+    Ok(Json(res))
+}
+
+async fn handle_create_profile(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::desktop::types::CreateProfileCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.create_profile(command).await.map_err(|e| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "CREATE_PROFILE_ERROR",
+            &e.to_string(),
+            false,
+        )
+    })?;
+    Ok(Json(res))
+}
+
+async fn handle_update_profile(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::desktop::types::UpdateProfileCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state.service.update_profile(command).await.map_err(|e| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "UPDATE_PROFILE_ERROR",
+            &e.to_string(),
+            false,
+        )
+    })?;
+    Ok(Json(json!({ "success": true })))
+}
+
+async fn handle_delete_profile(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::desktop::types::ProfileIdCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state.service.delete_profile(command).await.map_err(|e| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "DELETE_PROFILE_ERROR",
+            &e.to_string(),
+            false,
+        )
+    })?;
+    Ok(Json(json!({ "success": true })))
+}
+
+// Sets the session's active profile. Refused with 409 while playback is not
+// idle - see DesktopService::set_active_profile for why.
+async fn handle_set_active_profile(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::desktop::types::ProfileIdCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state
+        .service
+        .set_active_profile(command.profile_id)
+        .await
+        .map_err(|e| {
+            api_error(
+                StatusCode::CONFLICT,
+                "ACTIVE_PROFILE_ERROR",
+                &e.to_string(),
+                false,
+            )
+        })?;
+    Ok(Json(json!({ "success": true })))
+}
+
+async fn handle_get_lists(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let profile_id = params.get("profile_id").cloned().unwrap_or_default();
+    if profile_id.is_empty() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "MISSING_PROFILE_ID",
+            "profile_id is required",
+            false,
+        ));
+    }
+    let res = state.service.list_lists(profile_id).await.map_err(|e| {
+        tracing::error!("list lists error: {:#}", e);
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "LISTS_ERROR",
+            "Failed to list lists",
+            true,
+        )
+    })?;
+    Ok(Json(res))
+}
+
+async fn handle_create_list(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::desktop::types::CreateListCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state.service.create_list(command).await.map_err(|e| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "CREATE_LIST_ERROR",
+            &e.to_string(),
+            false,
+        )
+    })?;
+    Ok(Json(json!({ "success": true })))
+}
+
+async fn handle_delete_list(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::desktop::types::ListIdCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state.service.delete_list(command).await.map_err(|e| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "DELETE_LIST_ERROR",
+            &e.to_string(),
+            false,
+        )
+    })?;
+    Ok(Json(json!({ "success": true })))
+}
+
+async fn handle_add_list_item(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::desktop::types::AddListItemCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state.service.add_list_item(command).await.map_err(|e| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "ADD_LIST_ITEM_ERROR",
+            &e.to_string(),
+            false,
+        )
+    })?;
+    Ok(Json(json!({ "success": true })))
+}
+
+async fn handle_remove_list_item(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::desktop::types::RemoveListItemCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state.service.remove_list_item(command).await.map_err(|e| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "REMOVE_LIST_ITEM_ERROR",
+            &e.to_string(),
+            false,
+        )
+    })?;
+    Ok(Json(json!({ "success": true })))
+}
+
+async fn handle_get_watch_status(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let profile_id = params.get("profile_id").cloned().unwrap_or_default();
+    if profile_id.is_empty() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "MISSING_PROFILE_ID",
+            "profile_id is required",
+            false,
+        ));
+    }
+    let status = params.get("status").cloned();
+    let res = state
+        .service
+        .list_watch_status(profile_id, status)
+        .await
+        .map_err(|e| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "WATCH_STATUS_ERROR",
+                &e.to_string(),
+                false,
+            )
+        })?;
+    Ok(Json(res))
+}
+
+async fn handle_set_watch_status(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::desktop::types::SetWatchStatusCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state.service.set_watch_status(command).await.map_err(|e| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "SET_WATCH_STATUS_ERROR",
+            &e.to_string(),
+            false,
+        )
+    })?;
+    Ok(Json(json!({ "success": true })))
+}
+
+async fn handle_remove_watch_status(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<crate::desktop::types::RemoveWatchStatusCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state
+        .service
+        .remove_watch_status(command)
+        .await
+        .map_err(|e| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "REMOVE_WATCH_STATUS_ERROR",
+                &e.to_string(),
+                false,
+            )
+        })?;
     Ok(Json(json!({ "success": true })))
 }
 

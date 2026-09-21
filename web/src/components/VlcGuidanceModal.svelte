@@ -45,7 +45,7 @@
         <span class="badge badge-recommended">Media Player</span>
         <h2 class="card-title">Media Player Setup</h2>
       </div>
-      <button class="close-btn" on:click={onClose}><X size={18} /></button>
+      <button class="close-btn" type="button" aria-label="Close media player setup" on:click={onClose}><X size={18} /></button>
     </div>
 
     <p class="card-desc">
@@ -103,7 +103,7 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.75);
+    background: rgba(0, 0, 0, 0.52);
     z-index: 200;
     display: flex;
     align-items: center;
@@ -116,9 +116,12 @@
     width: 100%;
     padding: 28px;
     border-radius: var(--radius-lg);
-    background: var(--bg-surface);
-    border: 1px solid var(--border-subtle);
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+    background: var(--modal-surface);
+    border: 1px solid var(--modal-border);
+    box-shadow: var(--shadow-modal);
+    animation: guidance-enter 240ms cubic-bezier(0.16, 1, 0.3, 1);
+    max-height: calc(100dvh - 48px);
+    overflow-y: auto;
   }
 
   .card-header {
@@ -136,13 +139,20 @@
   }
 
   .close-btn {
-    background: transparent;
+    background: var(--control-fill);
     color: var(--text-muted);
-    padding: 4px;
+    padding: 6px;
+    border-radius: 50%;
   }
 
   .close-btn:hover {
+    background: var(--control-fill-hover);
     color: var(--text-primary);
+  }
+
+  @keyframes guidance-enter {
+    from { opacity: 0; transform: scale(0.96) translateY(10px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
   }
 
   .card-desc {
@@ -234,12 +244,12 @@
     font-size: 0.9rem;
     font-weight: 600;
     text-decoration: none;
-    background: var(--accent-primary);
+    background: var(--action-fill);
     color: #fff;
   }
 
   .download-link-btn:hover {
-    background: var(--accent-primary-hover);
+    background: var(--action-fill-hover);
   }
 
   .done-btn {

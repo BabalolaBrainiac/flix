@@ -38,6 +38,13 @@ pub enum DebugDetails {
         subtitle_index: Option<usize>,
         external_english: bool,
     },
+    /// Timing for one read from the local profile store, so a slow query
+    /// shows up in the exported report instead of only in a live trace.
+    Db {
+        operation: &'static str,
+        duration_ms: u64,
+        rows: usize,
+    },
 }
 
 #[derive(Serialize)]
@@ -118,6 +125,7 @@ impl DebugLog {
             stage: match details {
                 DebugDetails::Search { .. } => "search_completed",
                 DebugDetails::Languages { .. } => "languages_selected",
+                DebugDetails::Db { .. } => "db_read",
             },
             code: None,
             player: None,

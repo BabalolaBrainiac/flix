@@ -1,19 +1,25 @@
 use crate::config::Config;
 use crate::desktop::types::{
-    ActivationStatus, CatalogItemSummary, DownloadEntrySummary, DownloadsAction, DownloadsCommand,
-    DownloadsResponse, EpisodeSummary, EpisodesCommand, EpisodesResponse, PlayerSummary,
-    ReaderChaptersCommand, ReaderChaptersResponse, ReaderPagesCommand, ReaderPagesResponse,
-    ReaderProgressResponse, ReaderProgressSaveCommand, ReaderSearchCommand, ReaderSearchResponse,
-    RecommendCommand, RecommendItemSummary, RecommendResponse, RedeemInviteCommand,
-    RedeemInviteResponse, SearchCommand, SearchResponse, SettingsAction, SettingsCommand,
-    SettingsResponse, StreamSummary, StreamsCommand, StreamsResponse,
+    ActivationStatus, AddListItemCommand, CatalogItemSummary, CreateListCommand,
+    CreateProfileCommand, DownloadEntrySummary, DownloadsAction, DownloadsCommand,
+    DownloadsResponse, EpisodeSummary, EpisodesCommand, EpisodesResponse, ListIdCommand,
+    ListItemSummary, ListSummary, ListsResponse, PlayerSummary, ProfileIdCommand, ProfileSummary,
+    ProfilesResponse, ReaderChaptersCommand, ReaderChaptersResponse, ReaderProgressResponse,
+    ReaderProgressSaveCommand, ReaderSearchCommand, ReaderSearchResponse, RecommendCommand,
+    RecommendItemSummary, RecommendResponse, RedeemInviteCommand, RedeemInviteResponse,
+    RemoveListItemCommand, RemoveWatchStatusCommand, SearchCommand, SearchResponse,
+    SetWatchStatusCommand, SettingsAction, SettingsCommand, SettingsResponse, StreamSummary,
+    StreamsCommand, StreamsResponse, TitleLookupCommand, UpdateProfileCommand, WatchStatusResponse,
+    WatchStatusSummary,
 };
 use crate::library::Library;
 use crate::player;
+use crate::profiles::{ProfileStore, TitleMeta, WatchState};
 use crate::reader::cache::PageCache;
 use crate::reader::progress::{ProgressStore, ReadingPosition};
 use crate::reader::source::ReaderClient;
 use crate::reader::ReaderSource;
+use crate::recommend::ScoredItem;
 use crate::stremio::{
     automatic_playback_candidates, stream_quality_label, CatalogItem, CatalogKind, StremioClient,
 };
@@ -45,10 +51,26 @@ pub async fn handle_search(
     })
 }
 
-pub async fn handle_recommend(
+const CINEMETA_PAGE_SIZE: usize = 50;
+const KITSU_PAGE_SIZE: usize = 20;
+
+/// Adds the add-on `skip` argument for a round after the first.
+fn with_skip(extra: &str, round: usize, page_size: usize) -> String {
+    if round == 0 {
+        extra.to_string()
+    } else {
+        format!("{extra}&skip={}", round * page_size)
+    }
+}
+
+/// The candidates of one query that the add-ons return for one round, scored
+/// and ranked. Round 0 is the first page of each add-on catalog. Each later
+/// round skips the pages before it.
+pub async fn fetch_recommend_round(
     client: &StremioClient,
     command: &RecommendCommand,
-) -> Result<RecommendResponse> {
+    round: usize,
+) -> Result<Vec<ScoredItem>> {
     use crate::recommend;
 
     let resolved = recommend::resolve_keywords(&command.keywords);
@@ -73,7 +95,7 @@ pub async fn handle_recommend(
 
         for media_type in types {
             for genre in &resolved.genres {
-                let extra = format!("genre={genre}");
+                let extra = with_skip(&format!("genre={genre}"), round, CINEMETA_PAGE_SIZE);
                 if let Ok(items) = client
                     .discover(media_type, "top", &extra, CatalogKind::Cinemeta)
                     .await
@@ -82,8 +104,9 @@ pub async fn handle_recommend(
                 }
             }
             if resolved.genres.is_empty() {
+                let extra = with_skip("genre=Action", round, CINEMETA_PAGE_SIZE);
                 if let Ok(items) = client
-                    .discover(media_type, "top", "genre=Action", CatalogKind::Cinemeta)
+                    .discover(media_type, "top", &extra, CatalogKind::Cinemeta)
                     .await
                 {
                     all_items.extend(items);
@@ -96,7 +119,7 @@ pub async fn handle_recommend(
     if search_all || command.anime {
         match recommend::anime_catalog_for_genres(&resolved.genres) {
             recommend::AnimeCatalogStrategy::GenreFiltered { catalog_id, genre } => {
-                let extra = format!("genre={genre}");
+                let extra = with_skip(&format!("genre={genre}"), round, KITSU_PAGE_SIZE);
                 if let Ok(items) = client
                     .discover("anime", &catalog_id, &extra, CatalogKind::AnimeKitsu)
                     .await
@@ -105,11 +128,12 @@ pub async fn handle_recommend(
                 }
             }
             recommend::AnimeCatalogStrategy::TrendingWithLocalFilter => {
+                let extra = with_skip("genre=Action", round, KITSU_PAGE_SIZE);
                 if let Ok(items) = client
                     .discover(
                         "anime",
                         "kitsu-anime-trending",
-                        "genre=Action",
+                        &extra,
                         CatalogKind::AnimeKitsu,
                     )
                     .await
@@ -118,11 +142,12 @@ pub async fn handle_recommend(
                 }
             }
             recommend::AnimeCatalogStrategy::Popular => {
+                let extra = with_skip("genre=Action", round, KITSU_PAGE_SIZE);
                 if let Ok(items) = client
                     .discover(
                         "anime",
                         "kitsu-anime-popular",
-                        "genre=Action",
+                        &extra,
                         CatalogKind::AnimeKitsu,
                     )
                     .await
@@ -133,15 +158,19 @@ pub async fn handle_recommend(
         }
     }
 
-    let scored = recommend::score_items(all_items, &resolved);
-    let filter = recommend::RecommendFilter {
+    Ok(recommend::score_items(all_items, &resolved))
+}
+
+/// Cuts one page from a scored pool. `offset` and `limit` come from the
+/// command, so each page of one query reads the same ordered pool.
+pub fn page_recommend_pool(pool: &[ScoredItem], command: &RecommendCommand) -> RecommendResponse {
+    let filter = crate::recommend::RecommendFilter {
         min_rating: command.min_rating,
         since_year: command.since_year,
+        offset: command.offset,
         limit: command.limit,
     };
-    let filtered = recommend::apply_filter(scored, &filter);
-
-    let items = filtered
+    let items = crate::recommend::apply_filter(pool.to_vec(), &filter)
         .into_iter()
         .map(|scored| RecommendItemSummary {
             id: scored.item.id,
@@ -156,8 +185,15 @@ pub async fn handle_recommend(
             score: scored.score,
         })
         .collect();
+    RecommendResponse { items }
+}
 
-    Ok(RecommendResponse { items })
+pub async fn handle_recommend(
+    client: &StremioClient,
+    command: &RecommendCommand,
+) -> Result<RecommendResponse> {
+    let pool = fetch_recommend_round(client, command, 0).await?;
+    Ok(page_recommend_pool(&pool, command))
 }
 
 pub async fn handle_episodes(
@@ -191,6 +227,21 @@ pub async fn handle_episodes(
         episodes: summaries,
         is_anime,
     })
+}
+
+/// Looks up a title's display data by catalog id, for a list item or a
+/// watch status that was stored before this app captured titles.
+pub async fn handle_title_lookup(
+    client: &StremioClient,
+    command: &TitleLookupCommand,
+) -> Result<CatalogItemSummary> {
+    let catalog_id = command.catalog_id.trim();
+    let media_type = command.media_type.trim();
+    if catalog_id.is_empty() || media_type.is_empty() {
+        return Err(anyhow!("catalog_id and media_type are required"));
+    }
+    let item = client.title_lookup(catalog_id, media_type).await?;
+    Ok(CatalogItemSummary::from(&item))
 }
 
 pub async fn handle_streams(
@@ -501,43 +552,21 @@ pub async fn handle_reader_chapters(
     })
 }
 
-pub async fn handle_reader_pages(
-    _config: &Config,
-    command: &ReaderPagesCommand,
-) -> Result<ReaderPagesResponse> {
+/// The upstream image URLs of one chapter.
+pub async fn fetch_reader_page_urls(chapter_id: &str) -> Result<Vec<String>> {
     let client = ReaderClient::new(ReaderSource::MangaDex)?;
-    let page_set = client.pages(&command.chapter_id).await?;
-    let page_count = page_set.page_urls.len();
-    // Return local proxy URLs instead of external URLs
-    let pages: Vec<String> = (0..page_count)
-        .map(|i| {
-            format!(
-                "/api/reader/page?chapter_id={}&index={i}&manga_id={}",
-                command.chapter_id, command.manga_id
-            )
-        })
-        .collect();
-    Ok(ReaderPagesResponse {
-        chapter_id: command.chapter_id.clone(),
-        page_count,
-        pages,
-    })
+    Ok(client.pages(chapter_id).await?.page_urls)
 }
 
+/// Returns one page image, from the disk cache or from upstream. `url` is the
+/// upstream address of this page.
 pub async fn handle_reader_page_download(
     config: &Config,
     chapter_id: &str,
     manga_id: &str,
     index: usize,
+    url: &str,
 ) -> Result<(Vec<u8>, String)> {
-    let client = ReaderClient::new(ReaderSource::MangaDex)?;
-    let page_set = client.pages(chapter_id).await?;
-    let url = page_set
-        .page_urls
-        .get(index)
-        .ok_or_else(|| anyhow!("Page index {index} out of range"))?;
-
-    // Check cache first
     let cache = PageCache::new(&config.data_dir);
     let source_name = ReaderSource::MangaDex.to_string();
     let ext = url
@@ -546,21 +575,17 @@ pub async fn handle_reader_page_download(
         .filter(|e| e.len() <= 5 && e.chars().all(|c| c.is_ascii_alphanumeric()))
         .unwrap_or("jpg");
     let path = cache.page_path(&source_name, manga_id, chapter_id, index + 1, ext);
-
-    if cache.has_page(&path) {
-        let data = std::fs::read(&path)?;
-        let mime = mime_guess::from_path(&path)
-            .first_or_octet_stream()
-            .to_string();
-        return Ok((data, mime));
-    }
-
-    // Download and cache
-    let data = client.download_page(url).await?;
-    cache.store_page(&path, &data).await?;
     let mime = mime_guess::from_path(&path)
         .first_or_octet_stream()
         .to_string();
+
+    if cache.has_page(&path) {
+        return Ok((std::fs::read(&path)?, mime));
+    }
+
+    let client = ReaderClient::new(ReaderSource::MangaDex)?;
+    let data = client.download_page(url).await?;
+    cache.store_page(&path, &data).await?;
     Ok((data, mime))
 }
 
@@ -590,4 +615,163 @@ pub fn handle_reader_progress_save(
             .to_string(),
     });
     store.save()
+}
+
+// ---- Profiles, lists, and watch status ----
+//
+// Every function below is synchronous: it runs the SQLite call directly, and
+// the caller (DesktopService) is responsible for running it inside
+// `tokio::task::spawn_blocking` so a disk write never stalls the async
+// runtime the player and torrent I/O also use.
+
+pub fn handle_list_profiles(
+    store: &ProfileStore,
+    active_profile_id: Option<String>,
+) -> Result<ProfilesResponse> {
+    Ok(ProfilesResponse {
+        profiles: store
+            .list_profiles()?
+            .into_iter()
+            .map(ProfileSummary::from)
+            .collect(),
+        active_profile_id,
+    })
+}
+
+pub fn handle_create_profile(
+    store: &ProfileStore,
+    command: &CreateProfileCommand,
+) -> Result<ProfileSummary> {
+    let name = command.name.trim();
+    let avatar_key = command.avatar_key.trim();
+    if name.is_empty() || avatar_key.is_empty() {
+        return Err(anyhow!("name and avatar_key are required"));
+    }
+    Ok(store.create_profile(name, avatar_key)?.into())
+}
+
+pub fn handle_update_profile(store: &ProfileStore, command: &UpdateProfileCommand) -> Result<()> {
+    store.update_profile(
+        &command.profile_id,
+        command.name.as_deref(),
+        command.avatar_key.as_deref(),
+    )
+}
+
+pub fn handle_delete_profile(store: &ProfileStore, command: &ProfileIdCommand) -> Result<()> {
+    store.delete_profile(&command.profile_id)
+}
+
+pub fn handle_create_list(store: &ProfileStore, command: &CreateListCommand) -> Result<()> {
+    let name = command.name.trim();
+    if name.is_empty() {
+        return Err(anyhow!("name is required"));
+    }
+    store.create_list(&command.profile_id, name)?;
+    Ok(())
+}
+
+pub fn handle_delete_list(store: &ProfileStore, command: &ListIdCommand) -> Result<()> {
+    store.delete_list(&command.list_id)
+}
+
+pub fn handle_list_lists(store: &ProfileStore, profile_id: &str) -> Result<ListsResponse> {
+    let mut items_by_list: std::collections::HashMap<String, Vec<ListItemSummary>> =
+        std::collections::HashMap::new();
+    for item in store.items_for_profile(profile_id)? {
+        items_by_list
+            .entry(item.list_id.clone())
+            .or_default()
+            .push(ListItemSummary::from(item));
+    }
+    let lists = store
+        .list_lists(profile_id)?
+        .into_iter()
+        .map(|list| ListSummary {
+            items: items_by_list.remove(&list.id).unwrap_or_default(),
+            id: list.id,
+            profile_id: list.profile_id,
+            name: list.name,
+            created_at: list.created_at,
+        })
+        .collect();
+    Ok(ListsResponse { lists })
+}
+
+fn clean(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// A client sends back the poster it received, which is a signed local
+/// address. The store keeps the original address.
+fn original_poster(value: Option<&str>) -> Option<String> {
+    clean(value).map(crate::desktop::poster_cache::original_poster_url)
+}
+
+pub fn handle_add_list_item(store: &ProfileStore, command: &AddListItemCommand) -> Result<()> {
+    let catalog_id = command.catalog_id.trim();
+    let media_type = command.media_type.trim();
+    if catalog_id.is_empty() || media_type.is_empty() {
+        return Err(anyhow!("catalog_id and media_type are required"));
+    }
+    let poster = original_poster(command.poster.as_deref());
+    let meta = TitleMeta {
+        media_type: Some(media_type),
+        title: clean(command.title.as_deref()),
+        poster: clean(poster.as_deref()),
+        year: command.year,
+        canonical_id: clean(command.canonical_id.as_deref()),
+    };
+    store.add_list_item(&command.list_id, catalog_id, media_type, &meta)
+}
+
+pub fn handle_remove_list_item(
+    store: &ProfileStore,
+    command: &RemoveListItemCommand,
+) -> Result<()> {
+    store.remove_list_item(&command.list_id, &command.catalog_id)
+}
+
+pub fn handle_set_watch_status(
+    store: &ProfileStore,
+    command: &SetWatchStatusCommand,
+) -> Result<()> {
+    let status = WatchState::parse(&command.status)?;
+    let poster = original_poster(command.poster.as_deref());
+    let meta = TitleMeta {
+        media_type: clean(command.media_type.as_deref()),
+        title: clean(command.title.as_deref()),
+        poster: clean(poster.as_deref()),
+        year: command.year,
+        canonical_id: clean(command.canonical_id.as_deref()),
+    };
+    store.set_watch_status(
+        &command.profile_id,
+        &command.catalog_id,
+        status,
+        command.episode_id.as_deref(),
+        command.resume_seconds,
+        &meta,
+    )
+}
+
+pub fn handle_remove_watch_status(
+    store: &ProfileStore,
+    command: &RemoveWatchStatusCommand,
+) -> Result<()> {
+    store.remove_watch_status(&command.profile_id, &command.catalog_id)
+}
+
+pub fn handle_list_watch_status(
+    store: &ProfileStore,
+    profile_id: &str,
+    status: Option<&str>,
+) -> Result<WatchStatusResponse> {
+    let rows = match status {
+        Some(raw) => store.watch_status_by_state(profile_id, WatchState::parse(raw)?)?,
+        None => store.all_watch_status(profile_id)?,
+    };
+    Ok(WatchStatusResponse {
+        watch_status: rows.into_iter().map(WatchStatusSummary::from).collect(),
+    })
 }

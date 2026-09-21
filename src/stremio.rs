@@ -115,6 +115,18 @@ struct MetaEnvelope {
 #[derive(Deserialize)]
 struct MetaRecord {
     #[serde(default)]
+    name: String,
+    #[serde(rename = "releaseInfo", default)]
+    release_info: Option<String>,
+    #[serde(default)]
+    poster: Option<String>,
+    #[serde(default)]
+    genres: Option<Vec<String>>,
+    #[serde(rename = "imdbRating", default)]
+    imdb_rating: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
     videos: Vec<EpisodeRecord>,
 }
 
@@ -226,6 +238,40 @@ pub fn parse_meta_response(value: Value) -> Result<Vec<Episode>> {
         .collect();
     episodes.sort_by_key(|episode| (episode.season, episode.episode));
     Ok(episodes)
+}
+
+/// Reads the display fields (name, poster, year, genres, rating) off a
+/// `/meta/{type}/{id}.json` response. Used to fill in a title that a list
+/// item or a watch status stored with no title, from a device that added it
+/// before this data was captured.
+pub fn parse_meta_summary(
+    value: Value,
+    id: &str,
+    media_type: &str,
+    kind: CatalogKind,
+) -> Result<CatalogItem> {
+    let envelope: MetaEnvelope =
+        serde_json::from_value(value).context("Stremio returned an invalid metadata response")?;
+    let record = envelope.meta;
+    if record.name.trim().is_empty() {
+        return Err(anyhow!("Stremio metadata has no title"));
+    }
+    Ok(CatalogItem {
+        id: id.to_string(),
+        media_type: media_type.to_string(),
+        name: sanitize_text(&record.name, 200),
+        release_info: record.release_info.map(|value| sanitize_text(&value, 80)),
+        poster: record.poster.map(|value| sanitize_text(&value, 500)),
+        genres: record.genres.map(|values| {
+            values
+                .iter()
+                .map(|value| sanitize_text(value, 100))
+                .collect()
+        }),
+        imdb_rating: record.imdb_rating.map(|value| sanitize_text(&value, 20)),
+        description: record.description.map(|value| sanitize_text(&value, 500)),
+        kind,
+    })
 }
 
 pub fn parse_stream_response(value: Value) -> Result<Vec<TorrentStream>> {
@@ -494,6 +540,28 @@ impl StremioClient {
         };
         let url = resource_url(base, "meta", media_type, &item.id)?;
         parse_meta_response(self.get_json(url, "metadata").await?)
+    }
+
+    /// Looks up a title's display data (name, poster, year, genres, rating)
+    /// directly by catalog id. Used to backfill a list item or a watch
+    /// status that was stored before title data was captured.
+    pub async fn title_lookup(&self, catalog_id: &str, media_type: &str) -> Result<CatalogItem> {
+        let is_kitsu = catalog_id.starts_with("kitsu:");
+        let kind = if is_kitsu {
+            CatalogKind::AnimeKitsu
+        } else {
+            CatalogKind::Cinemeta
+        };
+        let base = match kind {
+            CatalogKind::Cinemeta => &self.cinemeta_base,
+            CatalogKind::AnimeKitsu => &self.anime_base,
+        };
+        // The Anime Kitsu addon only serves meta under "series", regardless
+        // of the item's own media type - same rule as `episodes` above.
+        let lookup_type = if is_kitsu { "series" } else { media_type };
+        let url = resource_url(base, "meta", lookup_type, catalog_id)?;
+        let value = self.get_json(url, "metadata").await?;
+        parse_meta_summary(value, catalog_id, media_type, kind)
     }
 
     pub async fn streams(&self, media_type: &str, id: &str) -> Result<Vec<TorrentStream>> {

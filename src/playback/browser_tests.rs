@@ -8,7 +8,7 @@ async fn fixture(bytes: &[u8]) -> (DesktopService, tempfile::TempDir, PathBuf) {
         data_dir: root.path().join("data"),
         download_dir: root.path().join("downloads"),
     };
-    let service = DesktopService::new(config.clone());
+    let service = DesktopService::new(config.clone()).unwrap();
     let coordinator = service.coordinator();
     let cache = PlaybackCache::new().unwrap();
     let cache_path = cache.path().to_owned();

@@ -84,13 +84,19 @@
     display: grid;
     place-items: center;
     padding: 24px;
-    background: rgba(4, 6, 10, 0.84);
+    background: rgba(0, 0, 0, 0.58);
   }
 
   .activation-card {
     width: min(460px, 100%);
     padding: 28px;
     border-radius: var(--radius-md);
+    background: var(--modal-surface);
+    border-color: var(--modal-border);
+    box-shadow: var(--shadow-modal);
+    animation: activation-enter 240ms cubic-bezier(0.16, 1, 0.3, 1);
+    max-height: calc(100dvh - 48px);
+    overflow-y: auto;
   }
 
   .eyebrow {
@@ -159,13 +165,20 @@
   }
 
   .primary {
-    background: var(--accent-primary);
+    background: var(--action-fill);
     color: #fff;
   }
+
+  .primary:hover:not(:disabled) { background: var(--action-fill-hover); }
 
   .secondary {
     border: 1px solid var(--border-subtle);
     background: var(--bg-surface-active);
     color: var(--text-secondary);
+  }
+
+  @keyframes activation-enter {
+    from { opacity: 0; transform: scale(0.96) translateY(10px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
   }
 </style>

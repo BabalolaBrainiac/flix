@@ -39,8 +39,10 @@ impl MediaRef {
             } => {
                 let formatted_ep = format!("S{:02}E{:02}", season, episode);
                 match title {
+                    // Many catalogs number episodes without naming them - the
+                    // code alone is a normal, complete label, not an error.
                     Some(t) if !t.trim().is_empty() => format!("{} · {}", formatted_ep, t.trim()),
-                    _ => format!("{} · Title unavailable", formatted_ep),
+                    _ => formatted_ep,
                 }
             }
         }

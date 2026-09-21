@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     let config = Config::load()?;
     let cache_data = config.data_dir.clone();
     tokio::task::spawn_blocking(move || flix::storage::trim_media_caches(&cache_data));
-    let service = DesktopService::new(config);
+    let service = DesktopService::new(config)?;
 
     if args.check {
         let settings = service.settings(&SettingsCommand {
@@ -63,12 +63,11 @@ async fn main() -> Result<()> {
     let launch_url = server.url();
 
     println!("Flix Desktop server bound to: {}", server.local_url());
+    println!("Launch URL: {}", launch_url);
 
     if !args.no_open {
         println!("Opening default browser at launch URL...");
         open_browser(&launch_url);
-    } else {
-        println!("Open this URL in your browser: {}", launch_url);
     }
 
     // Run server with Ctrl+C signal and internal /api/quit support

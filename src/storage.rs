@@ -3,7 +3,8 @@ use std::time::{Duration, SystemTime};
 
 pub const READER_CACHE_LIMIT: u64 = 128 * 1024 * 1024;
 pub const SUBTITLE_CACHE_LIMIT: u64 = 32 * 1024 * 1024;
-const CACHE_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+pub const POSTER_CACHE_LIMIT: u64 = 64 * 1024 * 1024;
+pub const CACHE_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
 struct CachedFile {
     path: PathBuf,
@@ -18,6 +19,7 @@ pub fn trim_media_caches(data_dir: &Path) {
         CACHE_AGE,
     );
     trim_cache(&data_dir.join("subtitles"), SUBTITLE_CACHE_LIMIT, CACHE_AGE);
+    trim_cache(&data_dir.join("posters"), POSTER_CACHE_LIMIT, CACHE_AGE);
 }
 
 pub fn trim_cache(root: &Path, limit: u64, max_age: Duration) {

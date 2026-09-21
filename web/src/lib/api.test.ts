@@ -94,4 +94,81 @@ describe('API Client', () => {
 
     await expect(getHealth()).rejects.toThrow('Unauthorized token');
   });
+
+  it('calls profile endpoints with proper routes and bodies', async () => {
+    const { getProfiles, createProfile, setActiveProfile } = await import('./api');
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ profiles: [], active_profile_id: 'default' }),
+    });
+    globalThis.fetch = mockFetch;
+
+    await getProfiles();
+    expect(mockFetch).toHaveBeenLastCalledWith('/api/profiles', expect.anything());
+
+    await createProfile('Family', 'family_group');
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      '/api/profiles',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ name: 'Family', avatar_key: 'family_group' }),
+      }),
+    );
+
+    await setActiveProfile('p-123');
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      '/api/profiles/active',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ profile_id: 'p-123' }),
+      }),
+    );
+  });
+
+  it('calls list and watch status endpoints with profile query param', async () => {
+    const { getLists, getWatchStatus, setWatchStatus } = await import('./api');
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ lists: [], statuses: [] }),
+    });
+    globalThis.fetch = mockFetch;
+
+    await getLists('prof-1');
+    expect(mockFetch).toHaveBeenLastCalledWith('/api/profiles/lists?profile_id=prof-1', expect.anything());
+
+    await getWatchStatus('prof-1');
+    expect(mockFetch).toHaveBeenLastCalledWith('/api/profiles/status?profile_id=prof-1', expect.anything());
+
+    await setWatchStatus('prof-1', { catalogId: 'm-1', mediaType: 'movie', title: 'Heat', year: 1995 }, 'completed', undefined, 8800);
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      '/api/profiles/status',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          profile_id: 'prof-1',
+          catalog_id: 'm-1',
+          status: 'completed',
+          resume_seconds: 8800,
+          title: 'Heat',
+          media_type: 'movie',
+          year: 1995,
+        }),
+      }),
+    );
+  });
+
+  it('sends the explicit delete route to remove a watch status', async () => {
+    const { removeWatchStatus } = await import('./api');
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+    globalThis.fetch = mockFetch;
+
+    await removeWatchStatus('prof-1', 'm-1');
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      '/api/profiles/status/delete',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ profile_id: 'prof-1', catalog_id: 'm-1' }),
+      }),
+    );
+  });
 });

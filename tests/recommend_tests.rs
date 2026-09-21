@@ -1,6 +1,6 @@
 use flix::recommend::{
     anime_catalog_for_genres, apply_filter, resolve_keywords, score_items, AnimeCatalogStrategy,
-    RecommendFilter,
+    RecommendFilter, RecommendPool,
 };
 use flix::stremio::{CatalogItem, CatalogKind};
 
@@ -92,6 +92,7 @@ fn min_rating_removes_low_rated_item() {
     let filter = RecommendFilter {
         min_rating: Some(7.0),
         since_year: None,
+        offset: 0,
         limit: 10,
     };
     let filtered = apply_filter(scored, &filter);
@@ -111,6 +112,7 @@ fn no_duplicate_ids_in_result() {
     let filter = RecommendFilter {
         min_rating: None,
         since_year: None,
+        offset: 0,
         limit: 10,
     };
     let filtered = apply_filter(scored, &filter);
@@ -141,4 +143,63 @@ fn supported_kitsu_genre_uses_filtered() {
 fn empty_genres_uses_popular() {
     let strategy = anime_catalog_for_genres(&[]);
     assert_eq!(strategy, AnimeCatalogStrategy::Popular);
+}
+
+fn scored(ids: &[&str]) -> Vec<flix::recommend::ScoredItem> {
+    let items = ids
+        .iter()
+        .map(|id| make_item(id, id, None, Some("8.0"), Some("2020")))
+        .collect();
+    score_items(items, &resolve_keywords(""))
+}
+
+#[test]
+fn offset_and_limit_cut_consecutive_pages_with_no_repeat() {
+    let pool = scored(&["a", "b", "c", "d", "e"]);
+    let page = |offset, limit| {
+        let filter = RecommendFilter {
+            min_rating: None,
+            since_year: None,
+            offset,
+            limit,
+        };
+        apply_filter(pool.clone(), &filter)
+            .into_iter()
+            .map(|s| s.item.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(page(0, 2), ["a", "b"]);
+    assert_eq!(page(2, 2), ["c", "d"]);
+    assert_eq!(page(4, 2), ["e"]);
+    assert!(page(6, 2).is_empty());
+}
+
+#[test]
+fn a_new_round_extends_the_pool_without_moving_earlier_items() {
+    let mut pool = RecommendPool::default();
+    assert!(pool.can_grow());
+    pool.absorb(scored(&["a", "b"]));
+    pool.absorb(scored(&["b", "c"]));
+    let ids: Vec<_> = pool.items.iter().map(|s| s.item.id.as_str()).collect();
+    assert_eq!(ids, ["a", "b", "c"]);
+    assert_eq!(pool.rounds, 2);
+    assert!(!pool.exhausted);
+}
+
+#[test]
+fn a_round_with_no_new_item_ends_the_pool() {
+    let mut pool = RecommendPool::default();
+    pool.absorb(scored(&["a"]));
+    pool.absorb(scored(&["a"]));
+    assert!(pool.exhausted);
+    assert!(!pool.can_grow());
+}
+
+#[test]
+fn a_pool_stops_growing_at_the_round_limit() {
+    let mut pool = RecommendPool::default();
+    for round in 0..flix::recommend::MAX_ROUNDS {
+        pool.absorb(scored(&[&format!("id{round}")]));
+    }
+    assert!(!pool.can_grow());
 }

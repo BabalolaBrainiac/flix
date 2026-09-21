@@ -30,6 +30,53 @@ export interface DeviceRecord {
   request_count: number;
 }
 
+export interface ProfileRecord {
+  id: string;
+  invite_code_hash: string;
+  name: string;
+  avatar_key: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ListRecordRow {
+  id: string;
+  profile_id: string;
+  name: string;
+  created_at: number;
+}
+
+export interface ListItemRecord {
+  list_id: string;
+  catalog_id: string;
+  media_type: string;
+  added_at: number;
+  title: string | null;
+  poster: string | null;
+  year: number | null;
+  canonical_id: string | null;
+}
+
+export interface WatchStatusRecord {
+  profile_id: string;
+  catalog_id: string;
+  status: string;
+  episode_id: string | null;
+  resume_seconds: number | null;
+  updated_at: number;
+  title: string | null;
+  poster: string | null;
+  media_type: string | null;
+  year: number | null;
+  canonical_id: string | null;
+}
+
+export interface DeletionRecord {
+  kind: string;
+  key: string;
+  deleted_at: number;
+}
+
 export interface SubtitleResolveRequest {
   imdb_id: string;
   season?: number;

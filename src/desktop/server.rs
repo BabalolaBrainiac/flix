@@ -130,6 +130,10 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/activation", get(handle_activation_status))
         .route("/api/activation/redeem", post(handle_redeem_invite))
         .route("/api/activation/reset", post(handle_reset_activation))
+        .route(
+            "/api/update",
+            get(handle_check_update).post(handle_install_update),
+        )
         .route("/api/vlc-guidance", get(handle_get_vlc_guidance))
         .route("/api/diagnostics", get(handle_get_diagnostics))
         .route("/api/diagnostics/export", get(handle_export_diagnostics))
@@ -290,6 +294,49 @@ async fn handle_health(
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION")
     })))
+}
+
+async fn handle_check_update(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|error| api_error(error, "UNAUTHORIZED", "Unauthorized", false))?;
+    let result = state.service.check_update().await.map_err(|error| {
+        tracing::warn!("update check error: {error:#}");
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            "UPDATE_CHECK_ERROR",
+            "Flix could not check for updates",
+            true,
+        )
+    })?;
+    Ok(Json(result))
+}
+
+async fn handle_install_update(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|error| api_error(error, "UNAUTHORIZED", "Unauthorized", false))?;
+    let result = state.service.install_update().await.map_err(|error| {
+        tracing::warn!("update install error: {error:#}");
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            "UPDATE_INSTALL_ERROR",
+            "Flix could not prepare the update",
+            true,
+        )
+    })?;
+    if !result.requires_manual_finish {
+        let shutdown = state.shutdown_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let _ = shutdown.send(());
+        });
+    }
+    Ok(Json(result))
 }
 
 /// How long this process waits after its last browser tab closes before it stops.

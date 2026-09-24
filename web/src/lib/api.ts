@@ -260,6 +260,17 @@ export async function quitApp(): Promise<{ success: boolean }> {
   });
 }
 
+export async function checkForUpdate(): Promise<import('./types').UpdateStatus> {
+  return request('/api/update');
+}
+
+export async function installUpdate(): Promise<import('./types').UpdateInstallResult> {
+  return request('/api/update', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
 export async function readerSearch(query: string, lang = 'en'): Promise<ReaderSearchResponse> {
   return request('/api/reader/search', {
     method: 'POST',

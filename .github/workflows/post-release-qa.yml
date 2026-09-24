@@ -105,6 +105,9 @@ jobs:
           test -d "$MOUNT_DIR/Flix.app"
           test -f "$MOUNT_DIR/Flix.app/Contents/Info.plist"
           test -x "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop"
+          test -f "$MOUNT_DIR/Flix.app/Contents/Resources/flix.icns"
+          VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$MOUNT_DIR/Flix.app/Contents/Info.plist")"
+          [ "$VERSION" = "0.4.0" ] || { echo "Expected version 0.4.0 in Info.plist, got $VERSION" >&2; exit 1; }
           echo "MOUNT_DIR=$MOUNT_DIR" >> "$GITHUB_ENV"
 
       - name: Run automated activation and playback QA
@@ -211,3 +214,21 @@ jobs:
           $RUN_URL
           EOF
           )"
+
+  record-success:
+    name: Record QA Success
+    needs: [qa-macos, qa-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Comment on issue #29
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh issue comment 29 \
+            --repo "${{ github.repository }}" \
+            --body "Automated post-release QA passed for $TAG on macOS and Windows: $RUN_URL" || true

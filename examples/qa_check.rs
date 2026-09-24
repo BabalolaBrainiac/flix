@@ -25,6 +25,7 @@ use tokio::time::{sleep, timeout, Instant};
 
 const PORT: u16 = 8998;
 const BOOTSTRAP_LINE: &str = "Open this URL in your browser: ";
+const CURRENT_BOOTSTRAP_LINE: &str = "Launch URL: ";
 const STATE_TIMEOUT: Duration = Duration::from_secs(45);
 
 struct Fixtures {
@@ -309,6 +310,16 @@ fn log_placed_fixtures(playback_dir: &Path) -> Result<()> {
     walk(playback_dir, 1)
 }
 
+fn bootstrap_token(line: &str) -> Option<String> {
+    let url_text = [CURRENT_BOOTSTRAP_LINE, BOOTSTRAP_LINE]
+        .into_iter()
+        .find_map(|prefix| line.strip_prefix(prefix))?;
+    let url = reqwest::Url::parse(url_text.trim()).ok()?;
+    url.query_pairs()
+        .find(|(key, _)| key == "token")
+        .map(|(_, token)| token.into_owned())
+}
+
 // The app prints its local bootstrap URL once on startup. A background task
 // keeps draining stdout after that so the child never blocks on a full pipe.
 async fn start_app(app_path: &Path, playback_dir: &Path) -> Result<(Child, String)> {
@@ -333,14 +344,9 @@ async fn start_app(app_path: &Path, playback_dir: &Path) -> Result<(Child, Strin
         let mut tx = Some(tx);
         while let Ok(Some(line)) = lines.next_line().await {
             println!("[flix-desktop] {line}");
-            if let Some(rest) = line.strip_prefix(BOOTSTRAP_LINE) {
+            if let Some(token) = bootstrap_token(&line) {
                 if let Some(sender) = tx.take() {
-                    if let Ok(url) = reqwest::Url::parse(rest.trim()) {
-                        if let Some((_, token)) = url.query_pairs().find(|(key, _)| key == "token")
-                        {
-                            let _ = sender.send(token.into_owned());
-                        }
-                    }
+                    let _ = sender.send(token);
                 }
             }
         }
@@ -351,6 +357,25 @@ async fn start_app(app_path: &Path, playback_dir: &Path) -> Result<(Child, Strin
         .context("Timed out waiting for the flix-desktop bootstrap line")?
         .context("flix-desktop exited before printing its bootstrap line")?;
     Ok((child, credential))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_current_bootstrap_line() {
+        let token = bootstrap_token("Launch URL: http://127.0.0.1:8998/?token=current-token");
+        assert_eq!(token.as_deref(), Some("current-token"));
+    }
+
+    #[test]
+    fn retains_support_for_the_legacy_bootstrap_line() {
+        let token = bootstrap_token(
+            "Open this URL in your browser: http://127.0.0.1:8998/?token=legacy-token",
+        );
+        assert_eq!(token.as_deref(), Some("legacy-token"));
+    }
 }
 
 async fn api(
@@ -385,10 +410,13 @@ async fn api(
 
 async fn wait_for_health(client: &reqwest::Client, credential: &str) -> Result<()> {
     for _ in 0..50 {
-        if api(client, credential, Method::GET, "/api/health", None)
-            .await
-            .is_ok()
-        {
+        if let Ok(health) = api(client, credential, Method::GET, "/api/health", None).await {
+            let version = health["version"]
+                .as_str()
+                .context("Health response is missing the version field")?;
+            if version != "0.4.0" {
+                bail!("Expected flix-desktop version 0.4.0, got {version}");
+            }
             return Ok(());
         }
         sleep(Duration::from_millis(200)).await;
@@ -446,6 +474,21 @@ async fn assert_stream_serves_bytes(
     Ok(())
 }
 
+async fn check_update_discovery(client: &reqwest::Client, credential: &str) -> Result<()> {
+    let update = api(client, credential, Method::GET, "/api/update", None).await?;
+    let current_version = update["current_version"]
+        .as_str()
+        .context("Missing current_version in update response")?;
+    let latest_version = update["latest_version"]
+        .as_str()
+        .context("Missing latest_version in update response")?;
+    if current_version != "0.4.0" {
+        bail!("Expected current_version 0.4.0, got {current_version}");
+    }
+    println!("Update discovery confirmed: current={current_version}, latest={latest_version}, available={}", update["available"]);
+    Ok(())
+}
+
 async fn drive_checks(
     client: &reqwest::Client,
     credential: &str,
@@ -455,6 +498,9 @@ async fn drive_checks(
     show_torrent: &Path,
 ) -> Result<()> {
     wait_for_health(client, credential).await?;
+
+    println!("Checking update discovery against published release metadata...");
+    check_update_discovery(client, credential).await?;
 
     println!("Activating with the QA invite code...");
     api(

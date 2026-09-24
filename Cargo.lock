@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "flix"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1127,6 +1127,7 @@ dependencies = [
  "rusqlite",
  "rust-embed",
  "scraper",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",

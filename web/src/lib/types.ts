@@ -189,6 +189,19 @@ export interface SettingsResponse {
   opensubtitles_configured: boolean;
 }
 
+export interface UpdateStatus {
+  current_version: string;
+  latest_version: string;
+  available: boolean;
+  release_url: string;
+}
+
+export interface UpdateInstallResult {
+  version: string;
+  package_path: string;
+  requires_manual_finish: boolean;
+}
+
 export interface ActivationStatus {
   is_activated: boolean;
   gateway_url?: string;

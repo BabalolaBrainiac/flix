@@ -1,10 +1,10 @@
 <script lang="ts">
-  import type { PlaybackSnapshot, ProfileSummary } from '../lib/types';
+  import type { PlaybackSnapshot, ProfileSummary, UpdateStatus } from '../lib/types';
   import type { Route, RouteName } from '../lib/router';
   import { navigate } from '../lib/router';
-  import { Compass, Bookmark, Download, BookOpen, ChevronDown, User, Activity, Power } from 'lucide-svelte';
+  import { Compass, Bookmark, Download, BookOpen, ChevronDown, User, Activity, Power, RefreshCw, X } from 'lucide-svelte';
   import { parseAvatarKey, iconFor } from '../lib/avatars';
-  import { quitApp } from '../lib/api';
+  import { checkForUpdate, installUpdate, quitApp } from '../lib/api';
 
   export let route: Route;
   export let playbackState: PlaybackSnapshot = { state: 'idle' };
@@ -94,6 +94,47 @@
   }
 
   let isQuitting = false;
+  let updateOpen = false;
+  let updateStatus: UpdateStatus | null = null;
+  let updateError = '';
+  let updateMessage = '';
+  let updateBusy = false;
+
+  async function handleCheckForUpdate() {
+    if (updateBusy) return;
+    menuOpen = false;
+    updateOpen = true;
+    updateBusy = true;
+    updateError = '';
+    updateMessage = '';
+    try {
+      updateStatus = await checkForUpdate();
+    } catch (error) {
+      updateError = error instanceof Error ? error.message : 'Flix could not check for updates.';
+    } finally {
+      updateBusy = false;
+    }
+  }
+
+  async function handleInstallUpdate() {
+    if (updateBusy || updateMessage) return;
+    updateBusy = true;
+    updateError = '';
+    try {
+      const result = await installUpdate();
+      updateMessage = result.requires_manual_finish
+        ? 'The verified update is open. Replace Flix in Applications to finish.'
+        : 'The verified installer started. Flix will close when installation begins.';
+    } catch (error) {
+      updateError = error instanceof Error ? error.message : 'Flix could not prepare the update.';
+    } finally {
+      updateBusy = false;
+    }
+  }
+
+  function closeUpdateFromBackdrop(event: MouseEvent) {
+    if (event.target === event.currentTarget) updateOpen = false;
+  }
 
   async function handleQuit() {
     menuOpen = false;
@@ -179,6 +220,9 @@
           <button type="button" role="menuitem" on:click={openDiagnostics}>
             <Activity size={16} strokeWidth={1.8} /> Diagnostics
           </button>
+          <button type="button" role="menuitem" on:click={handleCheckForUpdate}>
+            <RefreshCw size={16} strokeWidth={1.8} /> Check for Updates
+          </button>
           <button type="button" role="menuitem" on:click={handleQuit} disabled={isQuitting}>
             <Power size={16} strokeWidth={1.8} /> {isQuitting ? 'Quitting…' : 'Quit Flix'}
           </button>
@@ -187,6 +231,38 @@
     </div>
   </div>
 </header>
+
+{#if updateOpen}
+  <div class="update-overlay" role="presentation" on:click={closeUpdateFromBackdrop}>
+    <div
+      class="update-dialog"
+      role="dialog"
+      tabindex="-1"
+      aria-modal="true"
+      aria-labelledby="update-title"
+    >
+      <button class="update-close" type="button" aria-label="Close update dialog" on:click={() => (updateOpen = false)}>
+        <X size={17} strokeWidth={1.8} />
+      </button>
+      <p class="update-kicker">Flix Update</p>
+      <h2 id="update-title">{updateBusy && !updateStatus ? 'Checking for updates' : 'Software Update'}</h2>
+      {#if updateBusy && !updateStatus}
+        <p>Flix is checking the latest stable release.</p>
+      {:else if updateError}
+        <p class="update-error">{updateError}</p>
+        <button class="update-primary" type="button" on:click={handleCheckForUpdate}>Try Again</button>
+      {:else if updateStatus?.available}
+        <p>Flix {updateStatus.latest_version} is available. You have {updateStatus.current_version}.</p>
+        {#if updateMessage}<p class="update-success">{updateMessage}</p>{/if}
+        <button class="update-primary" type="button" disabled={updateBusy || !!updateMessage} on:click={handleInstallUpdate}>
+          {updateBusy ? 'Preparing Update…' : updateMessage ? 'Update Started' : 'Download and Install'}
+        </button>
+      {:else if updateStatus}
+        <p>Flix {updateStatus.current_version} is the latest stable version.</p>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 <style>
   .nav-right {
@@ -278,6 +354,37 @@
     background: var(--border-subtle);
     margin: 4px 2px;
   }
+
+  .update-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.68);
+    backdrop-filter: blur(16px);
+  }
+
+  .update-dialog {
+    position: relative;
+    width: min(430px, 100%);
+    padding: 28px;
+    border: 1px solid var(--modal-border);
+    border-radius: var(--radius-xl);
+    background: var(--modal-surface);
+    box-shadow: var(--shadow-modal);
+  }
+
+  .update-dialog h2 { margin: 4px 0 10px; font-size: 1.45rem; }
+  .update-dialog p { color: var(--text-secondary); }
+  .update-kicker { color: var(--accent-primary) !important; font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+  .update-error { color: var(--status-red) !important; }
+  .update-success { margin-top: 10px; color: var(--status-green) !important; }
+  .update-close { position: absolute; top: 16px; right: 16px; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--control-fill); color: var(--text-secondary); }
+  .update-primary { width: 100%; min-height: 42px; margin-top: 20px; border-radius: var(--radius-md); background: var(--action-fill); color: white; font-weight: 650; }
+  .update-primary:hover:not(:disabled) { background: var(--action-fill-hover); }
+  .update-primary:disabled { opacity: 0.62; cursor: wait; }
 
   .nav-header {
     position: sticky;

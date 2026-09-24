@@ -186,28 +186,68 @@ jobs:
             throw "flix-desktop.exe was not found after a silent install."
           }
 
-          $fileVersion = (Get-Item $exePath).VersionInfo.ProductVersion
-          if ($fileVersion -and (-not $fileVersion.StartsWith($expectedVersion))) {
-            throw "Expected Windows executable product version to match $expectedVersion, got $fileVersion"
+          $versionInfo = (Get-Item $exePath).VersionInfo
+          $fileVersion = $versionInfo.ProductVersion
+          if ([string]::IsNullOrWhiteSpace($fileVersion)) {
+            throw "Windows executable product version is empty."
           }
 
-          # Check that an installed icon or icon resource exists
+          $normalizedVersion = $fileVersion.Trim()
+          if ($normalizedVersion.Contains("+")) {
+            $normalizedVersion = $normalizedVersion.Split("+")[0].Trim()
+          }
+
+          if ($normalizedVersion -ne $expectedVersion -and -not $normalizedVersion.StartsWith("$expectedVersion.")) {
+            throw "Expected Windows executable product version to match $expectedVersion, got $fileVersion (normalized: $normalizedVersion)"
+          }
+
+          # Verify that the packaged Flix icon exists in the install directory or inside the executable resources
           $icoPath = Join-Path $installDir "flix.ico"
-          $hasIco = Test-Path $icoPath
-          $hasEmbeddedIcon = $false
-          try {
-            Add-Type -AssemblyName System.Drawing
-            $extracted = [System.Drawing.Icon]::ExtractAssociatedIcon($exePath)
-            if ($null -ne $extracted) {
-              $hasEmbeddedIcon = $true
-              $extracted.Dispose()
+          $hasFlixIco = $false
+          if (Test-Path $icoPath) {
+            $item = Get-Item $icoPath
+            if ($item.Length -gt 0) {
+              $hasFlixIco = $true
             }
-          } catch {
-            Write-Warning "Could not extract icon with System.Drawing: $_"
           }
 
-          if (-not $hasIco -and -not $hasEmbeddedIcon) {
-            throw "Expected an installed icon (flix.ico) or embedded executable icon."
+          $hasFlixExeIcon = $false
+          try {
+            Add-Type @"
+            using System;
+            using System.Runtime.InteropServices;
+            public class NativeIconHelper {
+                [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+                public static extern IntPtr LoadLibraryEx(string lpFileName, IntPtr hFile, uint dwFlags);
+                [DllImport("kernel32.dll", SetLastError = true)]
+                public static extern bool FreeLibrary(IntPtr hModule);
+                [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+                public static extern IntPtr FindResource(IntPtr hModule, IntPtr lpName, IntPtr lpType);
+                public const uint LOAD_LIBRARY_AS_DATAFILE = 0x00000002;
+                public static readonly IntPtr RT_GROUP_ICON = (IntPtr)14;
+                public static readonly IntPtr RT_ICON = (IntPtr)3;
+
+                public static bool HasIconResource(string path) {
+                    IntPtr hModule = LoadLibraryEx(path, IntPtr.Zero, LOAD_LIBRARY_AS_DATAFILE);
+                    if (hModule == IntPtr.Zero) return false;
+                    try {
+                        IntPtr res = FindResource(hModule, (IntPtr)1, RT_GROUP_ICON);
+                        if (res != IntPtr.Zero) return true;
+                        res = FindResource(hModule, (IntPtr)1, RT_ICON);
+                        return res != IntPtr.Zero;
+                    } finally {
+                        FreeLibrary(hModule);
+                    }
+                }
+            }
+"@
+            $hasFlixExeIcon = [NativeIconHelper]::HasIconResource($exePath)
+          } catch {
+            Write-Warning "Could not inspect executable icon resources with Win32 API: $_"
+          }
+
+          if (-not $hasFlixIco -and -not $hasFlixExeIcon) {
+            throw "Expected packaged Flix icon resource or flix.ico in installation directory."
           }
 
           echo "INSTALL_DIR=$installDir" >> $env:GITHUB_ENV

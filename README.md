@@ -69,21 +69,32 @@ Use these options:
 
 The desktop server binds only to `127.0.0.1`. Every API request requires a token that the process creates in memory.
 
-Merging to `main` runs checks and builds installer artifacts. It does not publish a GitHub release. Publication requires the separate manual **Release** workflow.
+Merging to `main` runs continuous integration checks. A successful run on `main` starts the release workflow. A manual release trigger also remains available.
 
-### Release 0.3.0
+### Release 0.4.0
 
-This release adds local profiles, custom lists, watch status, resume progress, and gateway synchronization.
-It also adds a simpler Discover interface, title pages, profile controls, and signed poster caching.
+This release adds an updater module, packaged application icons, and improved player focus behavior.
+It also updates the release automation pipeline.
 
 The unsigned installers are `Flix-macOS-universal.dmg` and `Flix-Windows-x64-Setup.exe`.
 The macOS installer supports Apple silicon and Intel Macs. The Windows installer targets x64 systems.
-Installer packages contain the application. They do not contain activation keys, user files, or playback caches.
+The macOS package remains unsigned.
+Installer packages contain only the application executable and embedded web assets.
+Activation keys and application data remain outside the installation directory.
+Existing activation, profiles, lists, progress, downloads, and cached subtitles persist across updates.
 
-The maintainer tests the macOS installer with a fresh activation before distribution.
-After package checks pass, run the manual **Release** workflow with version `v0.3.0` and the full commit SHA from `main`.
-The workflow checks the source, builds both installers, and publishes the files with `SHA256SUMS.txt`.
-Users can download the installers from the [GitHub releases page](https://github.com/BabalolaBrainiac/flix/releases).
+### Desktop updates
+
+The desktop web application checks for new releases on GitHub.
+When an update is available, you can inspect the version notes and install the update.
+
+- On Windows, Flix verifies the installer checksum and starts a background helper process.
+The helper waits for Flix to exit and runs the installer silently.
+- On macOS, Flix verifies the disk image checksum and opens the DMG file.
+Drag `Flix` to the Applications folder to replace the older version.
+
+The release workflow publishes verified packages with `SHA256SUMS.txt`.
+Users can download installers from the [GitHub releases page](https://github.com/BabalolaBrainiac/flix/releases).
 
 ### Install a packaged build on macOS
 

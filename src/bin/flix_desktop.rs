@@ -25,10 +25,15 @@ async fn main() -> Result<()> {
     // Initialize logging so pipeline errors are visible. RUST_LOG controls the
     // level; the default keeps warnings and errors. Without a subscriber every
     // tracing event is dropped silently.
+    //
+    // librqbit logs a WARN for every duplicate chunk request. Multi-peer
+    // torrent scheduling causes this constantly and it is not actionable, so
+    // it is quieted to error here to stop it from drowning out real warnings.
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("flix=info,warn")),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("flix=info,librqbit=error,warn")
+            }),
         )
         .init();
 

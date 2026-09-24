@@ -9,6 +9,7 @@ pub mod server;
 pub mod service;
 pub mod signed_url;
 pub mod types;
+pub mod updater;
 
 pub use commands::*;
 pub use credentials::*;

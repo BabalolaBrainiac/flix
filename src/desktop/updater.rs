@@ -401,9 +401,9 @@ pub fn update_is_available(current: &str, latest_tag: &str) -> Result<bool> {
 }
 
 pub fn build_windows_helper_command(pid: u32, package: &Path) -> (&'static str, Vec<String>) {
+    let escaped_path = package.to_string_lossy().replace('\'', "''");
     let script = format!(
-        "try {{ Wait-Process -Id {pid} -ErrorAction Stop }} catch {{}}; Start-Process -FilePath \"{}\" -ArgumentList '/S'",
-        package.display()
+        "try {{ Wait-Process -Id {pid} -ErrorAction Stop }} catch {{}}; Start-Process -FilePath '{escaped_path}' -ArgumentList '/S'"
     );
     (
         "powershell",
@@ -646,5 +646,17 @@ mod tests {
             r"C:\Users\test\AppData\Local\flix\updates\0.4.0\Flix-Windows-x64-Setup.exe"
         ));
         assert!(script.contains("/S"));
+    }
+
+    #[test]
+    fn builds_windows_helper_command_escapes_special_path_characters() {
+        let package = Path::new(r"C:\Users\test$user`name's\updates\setup.exe");
+        let (_, args) = build_windows_helper_command(1234, package);
+        let cmd_idx = args
+            .iter()
+            .position(|a| a == "-Command")
+            .expect("has -Command");
+        let script = &args[cmd_idx + 1];
+        assert!(script.contains(r"Start-Process -FilePath 'C:\Users\test$user`name''s\updates\setup.exe' -ArgumentList '/S'"));
     }
 }

@@ -10,7 +10,7 @@
 //! FLIX_PLAYBACK_DIR (see src/config.rs), so this never touches a real
 //! user's data and can run safely on any machine, not just CI.
 //!
-//! Usage: qa_check --app <path-to-flix-desktop>
+//! Usage: qa_check --app <path-to-flix-desktop> [--version <expected-version>]
 
 use anyhow::{bail, Context, Result};
 use librqbit::{create_torrent, CreateTorrentOptions};
@@ -45,9 +45,11 @@ async fn main() -> Result<()> {
 
 async fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let app_path = PathBuf::from(
-        arg_value(&args, "--app").context("Usage: qa_check --app <path-to-flix-desktop>")?,
-    );
+    let app_path =
+        PathBuf::from(arg_value(&args, "--app").context(
+            "Usage: qa_check --app <path-to-flix-desktop> [--version <expected-version>]",
+        )?);
+    let expected_version = arg_value(&args, "--version").map(str::to_string);
     let invite_code = std::env::var("QA_INVITE_CODE").context("QA_INVITE_CODE must be set")?;
 
     let work_dir = std::env::current_dir()?.join("target").join("qa-run");
@@ -85,6 +87,7 @@ async fn run() -> Result<()> {
         &client,
         &credential,
         &invite_code,
+        expected_version.as_deref(),
         &movie_torrent,
         &anime_torrent,
         &show_torrent,
@@ -376,6 +379,20 @@ mod tests {
         );
         assert_eq!(token.as_deref(), Some("legacy-token"));
     }
+
+    #[test]
+    fn parses_optional_version_argument() {
+        let args = vec![
+            "qa_check".to_string(),
+            "--app".to_string(),
+            "/path/to/app".to_string(),
+            "--version".to_string(),
+            "0.4.1".to_string(),
+        ];
+        assert_eq!(arg_value(&args, "--app"), Some("/path/to/app"));
+        assert_eq!(arg_value(&args, "--version"), Some("0.4.1"));
+        assert_eq!(arg_value(&args, "--missing"), None);
+    }
 }
 
 async fn api(
@@ -408,14 +425,20 @@ async fn api(
         .with_context(|| format!("{method} {endpoint} returned invalid JSON"))
 }
 
-async fn wait_for_health(client: &reqwest::Client, credential: &str) -> Result<()> {
+async fn wait_for_health(
+    client: &reqwest::Client,
+    credential: &str,
+    expected_version: Option<&str>,
+) -> Result<()> {
     for _ in 0..50 {
         if let Ok(health) = api(client, credential, Method::GET, "/api/health", None).await {
             let version = health["version"]
                 .as_str()
                 .context("Health response is missing the version field")?;
-            if version != "0.4.0" {
-                bail!("Expected flix-desktop version 0.4.0, got {version}");
+            if let Some(expected) = expected_version {
+                if version != expected {
+                    bail!("Expected flix-desktop version {expected}, got {version}");
+                }
             }
             return Ok(());
         }
@@ -474,7 +497,11 @@ async fn assert_stream_serves_bytes(
     Ok(())
 }
 
-async fn check_update_discovery(client: &reqwest::Client, credential: &str) -> Result<()> {
+async fn check_update_discovery(
+    client: &reqwest::Client,
+    credential: &str,
+    expected_version: Option<&str>,
+) -> Result<()> {
     let update = api(client, credential, Method::GET, "/api/update", None).await?;
     let current_version = update["current_version"]
         .as_str()
@@ -482,8 +509,10 @@ async fn check_update_discovery(client: &reqwest::Client, credential: &str) -> R
     let latest_version = update["latest_version"]
         .as_str()
         .context("Missing latest_version in update response")?;
-    if current_version != "0.4.0" {
-        bail!("Expected current_version 0.4.0, got {current_version}");
+    if let Some(expected) = expected_version {
+        if current_version != expected {
+            bail!("Expected current_version {expected}, got {current_version}");
+        }
     }
     println!("Update discovery confirmed: current={current_version}, latest={latest_version}, available={}", update["available"]);
     Ok(())
@@ -493,14 +522,15 @@ async fn drive_checks(
     client: &reqwest::Client,
     credential: &str,
     invite_code: &str,
+    expected_version: Option<&str>,
     movie_torrent: &Path,
     anime_torrent: &Path,
     show_torrent: &Path,
 ) -> Result<()> {
-    wait_for_health(client, credential).await?;
+    wait_for_health(client, credential, expected_version).await?;
 
     println!("Checking update discovery against published release metadata...");
-    check_update_discovery(client, credential).await?;
+    check_update_discovery(client, credential, expected_version).await?;
 
     println!("Activating with the QA invite code...");
     api(

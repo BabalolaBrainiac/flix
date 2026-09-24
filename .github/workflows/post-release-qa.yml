@@ -100,6 +100,8 @@ jobs:
       - name: Mount the DMG and check the app bundle
         run: |
           set -euo pipefail
+          EXPECTED_VERSION="${TAG#v}"
+          echo "EXPECTED_VERSION=$EXPECTED_VERSION" >> "$GITHUB_ENV"
           MOUNT_DIR="$(mktemp -d)"
           hdiutil attach Flix-macOS-universal.dmg -mountpoint "$MOUNT_DIR" -nobrowse -quiet
           test -d "$MOUNT_DIR/Flix.app"
@@ -107,13 +109,13 @@ jobs:
           test -x "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop"
           test -f "$MOUNT_DIR/Flix.app/Contents/Resources/flix.icns"
           VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$MOUNT_DIR/Flix.app/Contents/Info.plist")"
-          [ "$VERSION" = "0.4.0" ] || { echo "Expected version 0.4.0 in Info.plist, got $VERSION" >&2; exit 1; }
+          [ "$VERSION" = "$EXPECTED_VERSION" ] || { echo "Expected version $EXPECTED_VERSION in Info.plist, got $VERSION" >&2; exit 1; }
           echo "MOUNT_DIR=$MOUNT_DIR" >> "$GITHUB_ENV"
 
       - name: Run automated activation and playback QA
         env:
           QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
-        run: ./target/release/examples/qa_check --app "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop"
+        run: ./target/release/examples/qa_check --app "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop" --version "$EXPECTED_VERSION"
 
       - name: Unmount the DMG
         if: always()
@@ -172,18 +174,49 @@ jobs:
       - name: Run the installer silently and check the install
         shell: pwsh
         run: |
+          $tag = $env:TAG
+          $expectedVersion = $tag.TrimStart("v")
+          echo "EXPECTED_VERSION=$expectedVersion" >> $env:GITHUB_ENV
+
           $installDir = Join-Path $env:RUNNER_TEMP "flix-install"
           Start-Process -FilePath ".\Flix-Windows-x64-Setup.exe" -ArgumentList "/S", "/D=$installDir" -Wait
-          if (-not (Test-Path (Join-Path $installDir "flix-desktop.exe"))) {
+
+          $exePath = Join-Path $installDir "flix-desktop.exe"
+          if (-not (Test-Path $exePath)) {
             throw "flix-desktop.exe was not found after a silent install."
           }
+
+          $fileVersion = (Get-Item $exePath).VersionInfo.ProductVersion
+          if ($fileVersion -and (-not $fileVersion.StartsWith($expectedVersion))) {
+            throw "Expected Windows executable product version to match $expectedVersion, got $fileVersion"
+          }
+
+          # Check that an installed icon or icon resource exists
+          $icoPath = Join-Path $installDir "flix.ico"
+          $hasIco = Test-Path $icoPath
+          $hasEmbeddedIcon = $false
+          try {
+            Add-Type -AssemblyName System.Drawing
+            $extracted = [System.Drawing.Icon]::ExtractAssociatedIcon($exePath)
+            if ($null -ne $extracted) {
+              $hasEmbeddedIcon = $true
+              $extracted.Dispose()
+            }
+          } catch {
+            Write-Warning "Could not extract icon with System.Drawing: $_"
+          }
+
+          if (-not $hasIco -and -not $hasEmbeddedIcon) {
+            throw "Expected an installed icon (flix.ico) or embedded executable icon."
+          }
+
           echo "INSTALL_DIR=$installDir" >> $env:GITHUB_ENV
 
       - name: Run automated activation and playback QA
         shell: bash
         env:
           QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
-        run: ./target/release/examples/qa_check.exe --app "$INSTALL_DIR/flix-desktop.exe"
+        run: ./target/release/examples/qa_check.exe --app "$INSTALL_DIR/flix-desktop.exe" --version "$EXPECTED_VERSION"
 
   flag-regression:
     name: Flag a Post-Release Regression

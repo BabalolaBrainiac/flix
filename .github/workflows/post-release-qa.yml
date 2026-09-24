@@ -217,30 +217,55 @@ jobs:
             using System;
             using System.Runtime.InteropServices;
             public class NativeIconHelper {
+                public delegate bool EnumResourceNameCallback(
+                    IntPtr module,
+                    IntPtr type,
+                    IntPtr name,
+                    IntPtr parameter
+                );
                 [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
                 public static extern IntPtr LoadLibraryEx(string lpFileName, IntPtr hFile, uint dwFlags);
                 [DllImport("kernel32.dll", SetLastError = true)]
                 public static extern bool FreeLibrary(IntPtr hModule);
                 [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-                public static extern IntPtr FindResource(IntPtr hModule, IntPtr lpName, IntPtr lpType);
+                public static extern bool EnumResourceNames(
+                    IntPtr module,
+                    IntPtr type,
+                    EnumResourceNameCallback callback,
+                    IntPtr parameter
+                );
                 public const uint LOAD_LIBRARY_AS_DATAFILE = 0x00000002;
                 public static readonly IntPtr RT_GROUP_ICON = (IntPtr)14;
                 public static readonly IntPtr RT_ICON = (IntPtr)3;
+
+                private static bool HasResourceType(IntPtr module, IntPtr type) {
+                    bool found = false;
+                    EnumResourceNameCallback callback = delegate(
+                        IntPtr callbackModule,
+                        IntPtr callbackType,
+                        IntPtr name,
+                        IntPtr parameter
+                    ) {
+                        found = true;
+                        return false;
+                    };
+                    EnumResourceNames(module, type, callback, IntPtr.Zero);
+                    GC.KeepAlive(callback);
+                    return found;
+                }
 
                 public static bool HasIconResource(string path) {
                     IntPtr hModule = LoadLibraryEx(path, IntPtr.Zero, LOAD_LIBRARY_AS_DATAFILE);
                     if (hModule == IntPtr.Zero) return false;
                     try {
-                        IntPtr res = FindResource(hModule, (IntPtr)1, RT_GROUP_ICON);
-                        if (res != IntPtr.Zero) return true;
-                        res = FindResource(hModule, (IntPtr)1, RT_ICON);
-                        return res != IntPtr.Zero;
+                        return HasResourceType(hModule, RT_GROUP_ICON)
+                            || HasResourceType(hModule, RT_ICON);
                     } finally {
                         FreeLibrary(hModule);
                     }
                 }
             }
-"@
+          "@
             $hasFlixExeIcon = [NativeIconHelper]::HasIconResource($exePath)
           } catch {
             Write-Warning "Could not inspect executable icon resources with Win32 API: $_"

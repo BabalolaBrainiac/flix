@@ -171,4 +171,47 @@ describe('API Client', () => {
       }),
     );
   });
+
+  it('calls check for update endpoint via GET', async () => {
+    const { checkForUpdate } = await import('./api');
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        current_version: '0.4.0',
+        latest_version: '0.4.1',
+        available: true,
+        release_url: 'https://github.com/BabalolaBrainiac/flix/releases/tag/v0.4.1',
+      }),
+    });
+    globalThis.fetch = mockFetch;
+
+    const res = await checkForUpdate();
+    expect(res.available).toBe(true);
+    expect(res.latest_version).toBe('0.4.1');
+    expect(mockFetch).toHaveBeenLastCalledWith('/api/update', expect.anything());
+  });
+
+  it('calls install update endpoint via POST with empty body', async () => {
+    const { installUpdate } = await import('./api');
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        version: '0.4.1',
+        package_path: '/path/to/update',
+        requires_manual_finish: false,
+      }),
+    });
+    globalThis.fetch = mockFetch;
+
+    const res = await installUpdate();
+    expect(res.version).toBe('0.4.1');
+    expect(res.requires_manual_finish).toBe(false);
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      '/api/update',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+    );
+  });
 });

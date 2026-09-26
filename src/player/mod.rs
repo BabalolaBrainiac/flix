@@ -373,5 +373,57 @@ pub fn launch(p: &Player, url: &str, opts: &PlaybackOptions) -> Result<ManagedPl
     let child = command
         .spawn()
         .map_err(|e| anyhow!("Failed to spawn player: {}", e))?;
+    focus_player(p, child.id());
     Ok(ManagedPlayer::new(child))
 }
+
+pub fn macos_focus_command_args(kind: PlayerKind) -> (&'static str, Vec<String>) {
+    let application = match kind {
+        PlayerKind::Vlc => "VLC",
+        PlayerKind::Mpv => "mpv",
+    };
+    (
+        "/usr/bin/open",
+        vec!["-a".to_string(), application.to_string()],
+    )
+}
+
+pub fn windows_focus_command_args(process_id: u32) -> (&'static str, Vec<String>) {
+    let script = format!(
+        "$shell = New-Object -ComObject WScript.Shell; $null = $shell.AppActivate({process_id})"
+    );
+    (
+        "powershell",
+        vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-WindowStyle".to_string(),
+            "Hidden".to_string(),
+            "-Command".to_string(),
+            script,
+        ],
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn focus_player(player: &Player, _process_id: u32) {
+    let (program, args) = macos_focus_command_args(player.kind);
+    let _ = Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+#[cfg(target_os = "windows")]
+fn focus_player(_player: &Player, process_id: u32) {
+    let (program, args) = windows_focus_command_args(process_id);
+    let _ = Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn focus_player(_player: &Player, _process_id: u32) {}

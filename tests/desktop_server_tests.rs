@@ -292,3 +292,240 @@ async fn closing_the_last_browser_tab_stops_the_server_on_its_own() {
     );
     assert!(client.get(&health_url).send().await.is_err());
 }
+
+struct MockUpdateAdapter {
+    status_result: std::sync::Mutex<Option<anyhow::Result<flix::desktop::updater::UpdateStatus>>>,
+    install_result:
+        std::sync::Mutex<Option<anyhow::Result<flix::desktop::updater::UpdateInstallResult>>>,
+}
+
+impl MockUpdateAdapter {
+    fn new(
+        status: Option<anyhow::Result<flix::desktop::updater::UpdateStatus>>,
+        install: Option<anyhow::Result<flix::desktop::updater::UpdateInstallResult>>,
+    ) -> Self {
+        Self {
+            status_result: std::sync::Mutex::new(status),
+            install_result: std::sync::Mutex::new(install),
+        }
+    }
+}
+
+impl flix::desktop::updater::UpdateAdapter for MockUpdateAdapter {
+    fn check<'a>(
+        &'a self,
+    ) -> futures_util::future::BoxFuture<'a, anyhow::Result<flix::desktop::updater::UpdateStatus>>
+    {
+        Box::pin(async move {
+            self.status_result
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(|| Err(anyhow::anyhow!("Mock check failure")))
+        })
+    }
+
+    fn download_and_launch<'a>(
+        &'a self,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        anyhow::Result<flix::desktop::updater::UpdateInstallResult>,
+    > {
+        Box::pin(async move {
+            self.install_result
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(|| Err(anyhow::anyhow!("Mock install failure")))
+        })
+    }
+}
+
+#[tokio::test]
+async fn update_endpoints_require_authentication() {
+    let temp = TempDir::new().unwrap();
+    let config = Config {
+        download_dir: temp.path().join("downloads"),
+        data_dir: temp.path().join("data"),
+    };
+    let service = DesktopService::new(config).unwrap();
+    let server = DesktopServer::bind(service).await.unwrap();
+    let port = server.state.port;
+
+    let server_handle = tokio::spawn(async move {
+        let _ = server.run().await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::new();
+    let update_url = format!("http://127.0.0.1:{port}/api/update");
+
+    let get_res = client.get(&update_url).send().await.unwrap();
+    assert_eq!(get_res.status(), StatusCode::UNAUTHORIZED);
+
+    let post_res = client.post(&update_url).send().await.unwrap();
+    assert_eq!(post_res.status(), StatusCode::UNAUTHORIZED);
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn update_check_handles_success_and_failure() {
+    let temp = TempDir::new().unwrap();
+    let config = Config {
+        download_dir: temp.path().join("downloads"),
+        data_dir: temp.path().join("data"),
+    };
+
+    let mock_adapter = std::sync::Arc::new(MockUpdateAdapter::new(
+        Some(Ok(flix::desktop::updater::UpdateStatus {
+            current_version: "0.4.0".to_string(),
+            latest_version: "0.4.1".to_string(),
+            available: true,
+            release_url: "https://github.com/BabalolaBrainiac/flix/releases/tag/v0.4.1".to_string(),
+        })),
+        None,
+    ));
+
+    let updater = flix::desktop::updater::Updater::new(&config.data_dir)
+        .unwrap()
+        .with_adapter(mock_adapter.clone());
+    let service = DesktopService::new(config).unwrap().with_updater(updater);
+    let server = DesktopServer::bind(service).await.unwrap();
+    let port = server.state.port;
+    let token = server.state.token.clone();
+
+    let server_handle = tokio::spawn(async move {
+        let _ = server.run().await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::new();
+    let update_url = format!("http://127.0.0.1:{port}/api/update");
+
+    // Success case
+    let success_res = client
+        .get(&update_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(success_res.status(), StatusCode::OK);
+    let status_json: serde_json::Value = success_res.json().await.unwrap();
+    assert_eq!(status_json["available"], true);
+    assert_eq!(status_json["latest_version"], "0.4.1");
+
+    // Failure case (adapter now empty, defaults to Err)
+    let failure_res = client
+        .get(&update_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(failure_res.status(), StatusCode::BAD_GATEWAY);
+    let err_json: serde_json::Value = failure_res.json().await.unwrap();
+    assert_eq!(err_json["error"]["code"], "UPDATE_CHECK_ERROR");
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn update_install_handles_success_and_failure() {
+    let temp = TempDir::new().unwrap();
+    let config = Config {
+        download_dir: temp.path().join("downloads"),
+        data_dir: temp.path().join("data"),
+    };
+
+    let mock_adapter = std::sync::Arc::new(MockUpdateAdapter::new(
+        None,
+        Some(Err(anyhow::anyhow!("Verification failure"))),
+    ));
+
+    let updater = flix::desktop::updater::Updater::new(&config.data_dir)
+        .unwrap()
+        .with_adapter(mock_adapter.clone());
+    let service = DesktopService::new(config).unwrap().with_updater(updater);
+    let server = DesktopServer::bind(service).await.unwrap();
+    let port = server.state.port;
+    let token = server.state.token.clone();
+
+    let server_handle = tokio::spawn(async move {
+        let _ = server.run().await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::new();
+    let update_url = format!("http://127.0.0.1:{port}/api/update");
+
+    // 1. Failure case
+    let failure_res = client
+        .post(&update_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(failure_res.status(), StatusCode::BAD_GATEWAY);
+    let err_json: serde_json::Value = failure_res.json().await.unwrap();
+    assert_eq!(err_json["error"]["code"], "UPDATE_INSTALL_ERROR");
+
+    // Server must stay running after install failure
+    let health_res = client
+        .get(format!("http://127.0.0.1:{port}/api/health"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health_res.status(), StatusCode::OK);
+
+    // 2. Success case with requires_manual_finish = true (macOS style: no auto shutdown)
+    *mock_adapter.install_result.lock().unwrap() =
+        Some(Ok(flix::desktop::updater::UpdateInstallResult {
+            version: "0.4.1".to_string(),
+            package_path: "/tmp/Flix-macOS-universal.dmg".to_string(),
+            requires_manual_finish: true,
+        }));
+
+    let success_res = client
+        .post(&update_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(success_res.status(), StatusCode::OK);
+    let install_json: serde_json::Value = success_res.json().await.unwrap();
+    assert_eq!(install_json["requires_manual_finish"], true);
+
+    // Give time to confirm server does NOT shut down
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let health_res2 = client
+        .get(format!("http://127.0.0.1:{port}/api/health"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health_res2.status(), StatusCode::OK);
+
+    // 3. Success case with requires_manual_finish = false (Windows style: graceful shutdown follows)
+    *mock_adapter.install_result.lock().unwrap() =
+        Some(Ok(flix::desktop::updater::UpdateInstallResult {
+            version: "0.4.1".to_string(),
+            package_path: "C:\\Updates\\Flix-Windows-x64-Setup.exe".to_string(),
+            requires_manual_finish: false,
+        }));
+
+    let shutdown_res = client
+        .post(&update_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(shutdown_res.status(), StatusCode::OK);
+
+    // Server should shut down after ~1 second
+    let join_res = tokio::time::timeout(std::time::Duration::from_secs(3), server_handle).await;
+    assert!(
+        join_res.is_ok(),
+        "server must shut down following helper launch"
+    );
+}

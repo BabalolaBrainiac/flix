@@ -100,17 +100,22 @@ jobs:
       - name: Mount the DMG and check the app bundle
         run: |
           set -euo pipefail
+          EXPECTED_VERSION="${TAG#v}"
+          echo "EXPECTED_VERSION=$EXPECTED_VERSION" >> "$GITHUB_ENV"
           MOUNT_DIR="$(mktemp -d)"
           hdiutil attach Flix-macOS-universal.dmg -mountpoint "$MOUNT_DIR" -nobrowse -quiet
           test -d "$MOUNT_DIR/Flix.app"
           test -f "$MOUNT_DIR/Flix.app/Contents/Info.plist"
           test -x "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop"
+          test -f "$MOUNT_DIR/Flix.app/Contents/Resources/flix.icns"
+          VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$MOUNT_DIR/Flix.app/Contents/Info.plist")"
+          [ "$VERSION" = "$EXPECTED_VERSION" ] || { echo "Expected version $EXPECTED_VERSION in Info.plist, got $VERSION" >&2; exit 1; }
           echo "MOUNT_DIR=$MOUNT_DIR" >> "$GITHUB_ENV"
 
       - name: Run automated activation and playback QA
         env:
           QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
-        run: ./target/release/examples/qa_check --app "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop"
+        run: ./target/release/examples/qa_check --app "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop" --version "$EXPECTED_VERSION"
 
       - name: Unmount the DMG
         if: always()
@@ -169,18 +174,114 @@ jobs:
       - name: Run the installer silently and check the install
         shell: pwsh
         run: |
+          $tag = $env:TAG
+          $expectedVersion = $tag.TrimStart("v")
+          echo "EXPECTED_VERSION=$expectedVersion" >> $env:GITHUB_ENV
+
           $installDir = Join-Path $env:RUNNER_TEMP "flix-install"
           Start-Process -FilePath ".\Flix-Windows-x64-Setup.exe" -ArgumentList "/S", "/D=$installDir" -Wait
-          if (-not (Test-Path (Join-Path $installDir "flix-desktop.exe"))) {
+
+          $exePath = Join-Path $installDir "flix-desktop.exe"
+          if (-not (Test-Path $exePath)) {
             throw "flix-desktop.exe was not found after a silent install."
           }
+
+          $versionInfo = (Get-Item $exePath).VersionInfo
+          $fileVersion = $versionInfo.ProductVersion
+          if ([string]::IsNullOrWhiteSpace($fileVersion)) {
+            throw "Windows executable product version is empty."
+          }
+
+          $normalizedVersion = $fileVersion.Trim()
+          if ($normalizedVersion.Contains("+")) {
+            $normalizedVersion = $normalizedVersion.Split("+")[0].Trim()
+          }
+
+          if ($normalizedVersion -ne $expectedVersion -and -not $normalizedVersion.StartsWith("$expectedVersion.")) {
+            throw "Expected Windows executable product version to match $expectedVersion, got $fileVersion (normalized: $normalizedVersion)"
+          }
+
+          # Verify that the packaged Flix icon exists in the install directory or inside the executable resources
+          $icoPath = Join-Path $installDir "flix.ico"
+          $hasFlixIco = $false
+          if (Test-Path $icoPath) {
+            $item = Get-Item $icoPath
+            if ($item.Length -gt 0) {
+              $hasFlixIco = $true
+            }
+          }
+
+          $hasFlixExeIcon = $false
+          try {
+            Add-Type @"
+            using System;
+            using System.Runtime.InteropServices;
+            public class NativeIconHelper {
+                public delegate bool EnumResourceNameCallback(
+                    IntPtr module,
+                    IntPtr type,
+                    IntPtr name,
+                    IntPtr parameter
+                );
+                [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+                public static extern IntPtr LoadLibraryEx(string lpFileName, IntPtr hFile, uint dwFlags);
+                [DllImport("kernel32.dll", SetLastError = true)]
+                public static extern bool FreeLibrary(IntPtr hModule);
+                [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+                public static extern bool EnumResourceNames(
+                    IntPtr module,
+                    IntPtr type,
+                    EnumResourceNameCallback callback,
+                    IntPtr parameter
+                );
+                public const uint LOAD_LIBRARY_AS_DATAFILE = 0x00000002;
+                public static readonly IntPtr RT_GROUP_ICON = (IntPtr)14;
+                public static readonly IntPtr RT_ICON = (IntPtr)3;
+
+                private static bool HasResourceType(IntPtr module, IntPtr type) {
+                    bool found = false;
+                    EnumResourceNameCallback callback = delegate(
+                        IntPtr callbackModule,
+                        IntPtr callbackType,
+                        IntPtr name,
+                        IntPtr parameter
+                    ) {
+                        found = true;
+                        return false;
+                    };
+                    EnumResourceNames(module, type, callback, IntPtr.Zero);
+                    GC.KeepAlive(callback);
+                    return found;
+                }
+
+                public static bool HasIconResource(string path) {
+                    IntPtr hModule = LoadLibraryEx(path, IntPtr.Zero, LOAD_LIBRARY_AS_DATAFILE);
+                    if (hModule == IntPtr.Zero) return false;
+                    try {
+                        return HasResourceType(hModule, RT_GROUP_ICON)
+                            || HasResourceType(hModule, RT_ICON);
+                    } finally {
+                        FreeLibrary(hModule);
+                    }
+                }
+            }
+          "@
+            $hasFlixExeIcon = [NativeIconHelper]::HasIconResource($exePath)
+          } catch {
+            Write-Warning "Could not inspect executable icon resources with Win32 API: $_"
+          }
+
+          if (-not $hasFlixIco -and -not $hasFlixExeIcon) {
+            throw "Expected packaged Flix icon resource or flix.ico in installation directory."
+          }
+
           echo "INSTALL_DIR=$installDir" >> $env:GITHUB_ENV
 
       - name: Run automated activation and playback QA
         shell: bash
         env:
           QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
-        run: ./target/release/examples/qa_check.exe --app "$INSTALL_DIR/flix-desktop.exe"
+        run: ./target/release/examples/qa_check.exe --app "$INSTALL_DIR/flix-desktop.exe" --version "$EXPECTED_VERSION"
 
   flag-regression:
     name: Flag a Post-Release Regression
@@ -211,3 +312,21 @@ jobs:
           $RUN_URL
           EOF
           )"
+
+  record-success:
+    name: Record QA Success
+    needs: [qa-macos, qa-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Comment on issue #29
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh issue comment 29 \
+            --repo "${{ github.repository }}" \
+            --body "Automated post-release QA passed for $TAG on macOS and Windows: $RUN_URL" || true

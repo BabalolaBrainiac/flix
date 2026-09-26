@@ -103,3 +103,35 @@ fn verified_anime_tracks_override_english_preferences() {
         }
     }
 }
+
+#[test]
+fn macos_focus_command_targets_correct_player_applications() {
+    use flix::player::{macos_focus_command_args, PlayerKind};
+
+    let (program_vlc, args_vlc) = macos_focus_command_args(PlayerKind::Vlc);
+    assert_eq!(program_vlc, "/usr/bin/open");
+    assert_eq!(args_vlc, vec!["-a", "VLC"]);
+
+    let (program_mpv, args_mpv) = macos_focus_command_args(PlayerKind::Mpv);
+    assert_eq!(program_mpv, "/usr/bin/open");
+    assert_eq!(args_mpv, vec!["-a", "mpv"]);
+}
+
+#[test]
+fn windows_focus_command_targets_process_identifier() {
+    use flix::player::windows_focus_command_args;
+
+    let (program, args) = windows_focus_command_args(54321);
+    assert_eq!(program, "powershell");
+    assert!(args.contains(&"-NoProfile".to_string()));
+    assert!(args.contains(&"-NonInteractive".to_string()));
+    assert!(args.contains(&"-WindowStyle".to_string()));
+    assert!(args.contains(&"Hidden".to_string()));
+
+    let cmd_idx = args
+        .iter()
+        .position(|a| a == "-Command")
+        .expect("has -Command");
+    let script = &args[cmd_idx + 1];
+    assert!(script.contains("AppActivate(54321)"));
+}

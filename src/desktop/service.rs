@@ -14,6 +14,7 @@ use crate::desktop::types::{
     SettingsCommand, SettingsResponse, StopPlaybackCommand, StopPlaybackResponse, StreamsCommand,
     StreamsResponse, UpdateProfileCommand, WatchStatusResponse,
 };
+use crate::desktop::updater::{UpdateInstallResult, UpdateStatus, Updater};
 use crate::playback::{
     AlternativeSource, MediaRef, OperationAccepted, PlaybackCoordinator, PlaybackSnapshot,
     ResolvedSource,
@@ -50,6 +51,7 @@ pub struct DesktopService {
     page_urls: TtlCache<Vec<String>>,
     recommend_pools: TtlCache<Mutex<RecommendPool>>,
     poster_cache: PosterCache,
+    updater: Updater,
     // The profile every list, status, and progress write in this running
     // session is attributed to. See `set_active_profile` for why changing it
     // is refused during playback.
@@ -62,6 +64,7 @@ impl DesktopService {
         let coordinator = Arc::new(PlaybackCoordinator::new(config.clone()));
         let profiles = Arc::new(ProfileStore::open(&config.data_dir)?);
         let poster_cache = PosterCache::new(&config.data_dir)?;
+        let updater = Updater::new(&config.data_dir)?;
 
         // A single-profile household should never see a picker: the one
         // profile that exists is simply active from the start.
@@ -80,12 +83,26 @@ impl DesktopService {
             page_urls: TtlCache::new(PAGE_URL_TTL, PAGE_URL_CHAPTERS),
             recommend_pools: TtlCache::new(RECOMMEND_POOL_TTL, RECOMMEND_POOLS),
             poster_cache,
+            updater,
             current_profile_id: Arc::new(Mutex::new(initial_profile_id)),
         })
     }
 
     pub fn coordinator(&self) -> Arc<PlaybackCoordinator> {
         Arc::clone(&self.coordinator)
+    }
+
+    pub fn with_updater(mut self, updater: Updater) -> Self {
+        self.updater = updater;
+        self
+    }
+
+    pub async fn check_update(&self) -> Result<UpdateStatus> {
+        self.updater.check().await
+    }
+
+    pub async fn install_update(&self) -> Result<UpdateInstallResult> {
+        self.updater.download_and_launch().await
     }
 
     pub fn profiles(&self) -> Arc<ProfileStore> {

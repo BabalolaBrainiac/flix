@@ -183,7 +183,7 @@ describe('Gateway Invite Redemption', () => {
     expect(body.device_token).toHaveLength(64);
   });
 
-  it('rejects expired invite codes older than 7 days', async () => {
+  it('redeems an old invite while capacity remains', async () => {
     const eightDaysAgo = Date.now() - 8 * 24 * 60 * 60 * 1000;
     const mockInvite: InviteRecord = {
       code_hash: await sha256Hex('expired_invite'),
@@ -200,6 +200,7 @@ describe('Gateway Invite Redemption', () => {
           first: vi.fn().mockResolvedValue(
             query.includes('FROM invites') ? mockInvite : { count: 1 }
           ),
+          run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 1 } }),
         }),
       })),
     };
@@ -216,9 +217,9 @@ describe('Gateway Invite Redemption', () => {
     });
 
     const res = await handleRedeemInvite(req, env);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
     const body: any = await res.json();
-    expect(body.error).toContain('expired');
+    expect(body.device_token).toHaveLength(64);
   });
 
   it('rejects invite redemption if max_devices is reached', async () => {
@@ -526,6 +527,7 @@ describe('Gateway Admin API', () => {
     );
     const list: any = await listed.json();
     expect(list.invites.length).toBe(1);
+    expect(list.invites[0]).not.toHaveProperty('is_expired');
     const hash = list.invites[0].hash;
 
     const revoked = await worker.fetch(

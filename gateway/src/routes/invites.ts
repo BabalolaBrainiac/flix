@@ -2,8 +2,6 @@ import type { Env, InviteRecord } from '../types';
 import { authenticateDevice, checkRateLimit, getClientIp } from '../auth';
 import { generateSecureToken, sha256Hex } from '../crypto';
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
-
 export async function handleRedeemInvite(request: Request, env: Env): Promise<Response> {
   let body: any;
   try {
@@ -44,11 +42,6 @@ export async function handleRedeemInvite(request: Request, env: Env): Promise<Re
     return Response.json({ error: 'Invite code is invalid or revoked' }, { status: 403 });
   }
 
-  // Check 7-day expiry
-  if (now - invite.created_at > SEVEN_DAYS_MS) {
-    return Response.json({ error: 'Invite code has expired' }, { status: 403 });
-  }
-
   if (invite.redeemed_count >= invite.max_devices) {
     return Response.json(
       { error: 'Invite code has already been redeemed on the maximum allowed devices' },
@@ -66,11 +59,10 @@ export async function handleRedeemInvite(request: Request, env: Env): Promise<Re
       SET redeemed_count = redeemed_count + 1
       WHERE code_hash = ?
         AND is_revoked = 0
-        AND created_at >= ?
         AND redeemed_count < max_devices
     `
   )
-    .bind(codeHash, now - SEVEN_DAYS_MS)
+    .bind(codeHash)
     .run();
 
   if (!updateResult.success || updateResult.meta.changes === 0) {

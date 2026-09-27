@@ -1,8 +1,6 @@
 import type { Env, InviteRecord, DeviceRecord } from '../types';
 import { generateSecureToken, sha256Hex } from '../crypto';
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-
 // Short admin-facing tag on an invite (e.g. "qa", "users-batch-1"). Kept to a
 // safe character set since it is only ever handled through parameterized
 // queries here, but the same string is also embedded directly into raw SQL
@@ -109,14 +107,12 @@ export async function handleAdminListInvites(env: Env): Promise<Response> {
     'SELECT code_hash, created_at, max_devices, redeemed_count, is_revoked, label FROM invites ORDER BY created_at DESC LIMIT 200'
   ).all<InviteRecord>();
 
-  const now = Date.now();
   const invites = (rows.results || []).map((r) => ({
     hash: r.code_hash.substring(0, 12),
     created_at: r.created_at,
     max_devices: r.max_devices,
     redeemed_count: r.redeemed_count,
     is_revoked: r.is_revoked === 1,
-    is_expired: now - r.created_at > SEVEN_DAYS_MS,
     label: r.label,
   }));
   return Response.json({ invites });
@@ -371,7 +367,6 @@ const ADMIN_HTML = `<!doctype html>
 
   function inviteRow(i) {
     const status = i.is_revoked ? '<span class="pill bad">revoked</span>'
-      : i.is_expired ? '<span class="pill bad">expired</span>'
       : '<span class="pill ok">active</span>';
     const revokeBtn = i.is_revoked ? '' :
       '<button class="secondary" onclick="revokeInvite(\\'' + esc(i.hash) + '\\')">Revoke</button> ';

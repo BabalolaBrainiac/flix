@@ -65,6 +65,23 @@ jobs:
         with:
           toolchain: 1.95.0
 
+      - name: Probe gateway activation
+        env:
+          QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          http_code="$(curl -sS -o "$response_file" -w '%{http_code}' \
+            -X POST https://gateway.babalola.dev/v1/invites/redeem \
+            -H 'Content-Type: application/json' \
+            --data-binary "{\"invite_code\":\"$QA_INVITE_CODE\"}")"
+          content_type="$(file --brief --mime-type "$response_file")"
+          echo "Gateway activation probe: http=$http_code content_type=$content_type"
+          if [ "$http_code" != 200 ] || ! grep -q 'device_token' "$response_file"; then
+            exit 1
+          fi
+
       - name: Install ffmpeg
         run: |
           set -euo pipefail
@@ -151,6 +168,24 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
+
+      - name: Probe gateway activation
+        shell: bash
+        env:
+          QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          http_code="$(curl -sS -o "$response_file" -w '%{http_code}' \
+            -X POST https://gateway.babalola.dev/v1/invites/redeem \
+            -H 'Content-Type: application/json' \
+            --data-binary "{\"invite_code\":\"$QA_INVITE_CODE\"}")"
+          content_type="$(file --brief --mime-type "$response_file")"
+          echo "Gateway activation probe: http=$http_code content_type=$content_type"
+          if [ "$http_code" != 200 ] || ! grep -q 'device_token' "$response_file"; then
+            exit 1
+          fi
 
       - name: Install ffmpeg
         shell: bash

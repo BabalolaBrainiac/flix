@@ -23,6 +23,53 @@ function isApprovedProviderUrl(urlStr: string): boolean {
   }
 }
 
+// A TV episode search must scope by the show's ID through parent_imdb_id, not
+// imdb_id. Each episode has its own individual IMDb ID distinct from the
+// show's, so sending the show's ID as imdb_id together with season_number and
+// episode_number is a contradiction the provider does not resolve the way a
+// caller would expect, and it falls back to loosely-matched results.
+export function buildSearchUrl(
+  numericImdb: string,
+  isEpisode: boolean,
+  season: number | undefined,
+  episode: number | undefined
+): URL {
+  const searchUrl = new URL('https://api.opensubtitles.com/api/v1/subtitles');
+  searchUrl.searchParams.set('languages', 'en');
+  searchUrl.searchParams.set('order_by', 'download_count');
+  searchUrl.searchParams.set('order_direction', 'desc');
+  searchUrl.searchParams.set(isEpisode ? 'parent_imdb_id' : 'imdb_id', numericImdb);
+  if (season !== undefined) {
+    searchUrl.searchParams.set('season_number', season.toString());
+  }
+  if (episode !== undefined) {
+    searchUrl.searchParams.set('episode_number', episode.toString());
+  }
+  return searchUrl;
+}
+
+// The provider's season/episode filter is not fully trustworthy on its own,
+// so a candidate is accepted only after its own reported season and episode
+// match the request. Without this check, a loosely-matched result silently
+// becomes the wrong episode's subtitle.
+export function selectBestCandidate(
+  items: any[],
+  season: number | undefined,
+  episode: number | undefined
+): { file_id: number; file_name?: string } | null {
+  for (const item of items ?? []) {
+    const details = item.attributes?.feature_details;
+    const seasonOk = season === undefined || details?.season_number === season;
+    const episodeOk = episode === undefined || details?.episode_number === episode;
+    if (!seasonOk || !episodeOk) continue;
+    const file = item.attributes?.files?.[0];
+    if (file?.file_id && typeof file.file_id === 'number') {
+      return { file_id: file.file_id, file_name: item.attributes?.release || file.file_name };
+    }
+  }
+  return null;
+}
+
 export async function handleSubtitlesResolve(request: Request, env: Env): Promise<Response> {
   const authRes = await authenticateDevice(request, env);
   if (authRes instanceof Response) return authRes;
@@ -84,18 +131,8 @@ export async function handleSubtitlesResolve(request: Request, env: Env): Promis
   }
 
   const numericImdb = imdbIdRaw.replace(/^tt/, '');
-  const searchUrl = new URL('https://api.opensubtitles.com/api/v1/subtitles');
-  searchUrl.searchParams.set('languages', 'en');
-  searchUrl.searchParams.set('order_by', 'download_count');
-  searchUrl.searchParams.set('order_direction', 'desc');
-  searchUrl.searchParams.set('imdb_id', numericImdb);
-
-  if (season !== undefined) {
-    searchUrl.searchParams.set('season_number', season.toString());
-  }
-  if (episode !== undefined) {
-    searchUrl.searchParams.set('episode_number', episode.toString());
-  }
+  const isEpisode = season !== undefined || episode !== undefined;
+  const searchUrl = buildSearchUrl(numericImdb, isEpisode, season, episode);
 
   try {
     const userAgent = env.OPENSUBTITLES_USER_AGENT || 'Flix Gateway v0.1.0';
@@ -125,18 +162,7 @@ export async function handleSubtitlesResolve(request: Request, env: Env): Promis
       return Response.json(noMatch);
     }
 
-    // Find best candidate with valid file_id
-    let bestCandidate: { file_id: number; file_name?: string } | null = null;
-    for (const item of searchData.data) {
-      const file = item.attributes?.files?.[0];
-      if (file?.file_id && typeof file.file_id === 'number') {
-        bestCandidate = {
-          file_id: file.file_id,
-          file_name: item.attributes?.release || file.file_name,
-        };
-        break;
-      }
-    }
+    const bestCandidate = selectBestCandidate(searchData.data, season, episode);
 
     if (!bestCandidate) {
       const noMatch: SubtitleResolveResponse = {

@@ -124,7 +124,7 @@
       const result = await installUpdate();
       updateMessage = result.requires_manual_finish
         ? 'The verified update is open. Replace Flix in Applications to finish.'
-        : 'The verified installer started. Flix will close when installation begins.';
+        : 'The verified installer started. Flix will close, update, and reopen.';
     } catch (error) {
       updateError = error instanceof Error ? error.message : 'Flix could not prepare the update.';
     } finally {

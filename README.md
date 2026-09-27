@@ -90,8 +90,9 @@ When an update is available, you can inspect the version notes and install the u
 
 - On Windows, Flix verifies the installer checksum and starts a background helper process.
 The helper waits for Flix to exit and runs the installer silently.
-- On macOS, Flix verifies the disk image checksum and opens the DMG file.
-Drag `Flix` to the Applications folder to replace the older version.
+- On macOS, Flix verifies the disk image checksum and starts a background helper.
+The helper replaces the current app and reopens Flix.
+Move Flix out of a mounted DMG before you use automatic updates.
 
 The release workflow publishes verified packages with `SHA256SUMS.txt`.
 Users can download installers from the [GitHub releases page](https://github.com/BabalolaBrainiac/flix/releases).

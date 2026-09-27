@@ -419,12 +419,101 @@ pub fn build_windows_helper_command(pid: u32, package: &Path) -> (&'static str, 
 }
 
 #[cfg(target_os = "macos")]
-fn launch_platform_installer(package: &Path, _pid: u32) -> Result<bool> {
-    std::process::Command::new("/usr/bin/open")
-        .arg(package)
+fn macos_bundle_path(executable: &Path) -> Result<PathBuf> {
+    let macos_dir = executable
+        .parent()
+        .filter(|path| path.file_name().is_some_and(|name| name == "MacOS"))
+        .context("Flix is not running from a macOS application bundle")?;
+    let contents_dir = macos_dir
+        .parent()
+        .filter(|path| path.file_name().is_some_and(|name| name == "Contents"))
+        .context("Flix is not running from a macOS application bundle")?;
+    let bundle = contents_dir
+        .parent()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "app"))
+        .context("Flix is not running from a macOS application bundle")?;
+
+    if bundle.starts_with("/Volumes") {
+        bail!("Move Flix to Applications before using automatic updates");
+    }
+    Ok(bundle.to_path_buf())
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_helper_script(pid: u32, package: &Path, bundle: &Path) -> String {
+    let package = shell_quote(package);
+    let bundle = shell_quote(bundle);
+    format!(
+        r#"#!/bin/sh
+set -eu
+DMG={package}
+DEST={bundle}
+PARENT=$(/usr/bin/dirname "$DEST")
+MOUNT=$(/usr/bin/mktemp -d "${{TMPDIR:-/tmp}}/flix-update.XXXXXX")
+WORK=$(/usr/bin/mktemp -d "$PARENT/.flix-update.XXXXXX")
+STAGE="$WORK/new.app"
+BACKUP="$WORK/previous.app"
+
+cleanup() {{
+  /usr/bin/hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true
+  /bin/rm -rf "$STAGE"
+  if [ ! -d "$BACKUP" ]; then
+    /bin/rm -rf "$WORK"
+  fi
+  /bin/rmdir "$MOUNT" >/dev/null 2>&1 || true
+}}
+trap cleanup EXIT
+
+while /bin/kill -0 {pid} >/dev/null 2>&1; do
+  /bin/sleep 1
+done
+
+/usr/bin/hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -quiet
+SOURCE="$MOUNT/Flix.app"
+test -d "$SOURCE"
+/usr/bin/ditto "$SOURCE" "$STAGE"
+/bin/mv "$DEST" "$BACKUP"
+if /bin/mv "$STAGE" "$DEST"; then
+  /bin/rm -rf "$BACKUP"
+  /bin/rm -rf "$WORK"
+  /usr/bin/open "$DEST"
+else
+  /bin/mv "$BACKUP" "$DEST" || true
+  exit 1
+fi
+"#
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn launch_platform_installer(package: &Path, pid: u32) -> Result<bool> {
+    let executable = std::env::current_exe().context("Failed to locate the running Flix app")?;
+    let bundle = macos_bundle_path(&executable)?;
+    let install_parent = bundle
+        .parent()
+        .context("Flix cannot locate the application install directory")?;
+    let install_probe = tempfile::Builder::new()
+        .prefix(".flix-update-check.")
+        .tempfile_in(install_parent)
+        .context("Flix cannot replace the current app in its install directory")?;
+    drop(install_probe);
+    let helper = package.with_extension("install.sh");
+    std::fs::write(&helper, build_macos_helper_script(pid, package, &bundle))
+        .context("Failed to prepare the macOS update helper")?;
+
+    std::process::Command::new("/bin/sh")
+        .arg(helper)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
-        .context("Failed to open the macOS update package")?;
-    Ok(true)
+        .context("Failed to start the macOS update helper")?;
+    Ok(false)
 }
 
 #[cfg(target_os = "windows")]
@@ -658,5 +747,34 @@ mod tests {
             .expect("has -Command");
         let script = &args[cmd_idx + 1];
         assert!(script.contains(r"Start-Process -FilePath 'C:\Users\test$user`name''s\updates\setup.exe' -ArgumentList '/S'"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finds_the_macos_bundle_from_its_executable() {
+        let executable = Path::new("/Applications/Flix.app/Contents/MacOS/flix-desktop");
+        assert_eq!(
+            macos_bundle_path(executable).unwrap(),
+            Path::new("/Applications/Flix.app")
+        );
+        assert!(macos_bundle_path(Path::new("/tmp/flix-desktop")).is_err());
+        assert!(macos_bundle_path(Path::new(
+            "/Volumes/Flix/Flix.app/Contents/MacOS/flix-desktop"
+        ))
+        .is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn builds_a_quoted_macos_replacement_script() {
+        let package = Path::new("/tmp/user's update/Flix.dmg");
+        let bundle = Path::new("/Applications/Flix User's.app");
+        let script = build_macos_helper_script(4321, package, bundle);
+
+        assert!(script.contains("while /bin/kill -0 4321"));
+        assert!(script.contains("'/tmp/user'\"'\"'s update/Flix.dmg'"));
+        assert!(script.contains("'/Applications/Flix User'\"'\"'s.app'"));
+        assert!(script.contains("/usr/bin/ditto"));
+        assert!(script.contains("/usr/bin/open"));
     }
 }

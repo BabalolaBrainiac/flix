@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. v0.4.0) - optional, defaults to Cargo.toml'
+        description: 'Release version (e.g. v0.4.1) - optional, defaults to Cargo.toml'
         required: false
         type: string
       commit:

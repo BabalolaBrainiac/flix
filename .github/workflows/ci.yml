@@ -49,6 +49,48 @@ jobs:
       - name: Run test suite
         run: cargo test --all-features
 
+  windows-resource-check:
+    name: Windows Resource Check
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web bundle
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build Windows desktop binary
+        run: cargo build --locked --release --features web-ui --bin flix-desktop
+
+      - name: Verify Windows product version
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $expected = ($metadata.packages | Where-Object name -eq "flix").version
+          $actual = (Get-Item "target/release/flix-desktop.exe").VersionInfo.ProductVersion
+          if ([string]::IsNullOrWhiteSpace($actual)) {
+            throw "Windows executable product version is empty."
+          }
+          $normalized = $actual.Trim().Split("+")[0].Trim()
+          if ($normalized -ne $expected -and -not $normalized.StartsWith("$expected.")) {
+            throw "Expected Windows product version $expected, got $actual."
+          }
+
   web-check:
     name: Web Frontend Checks
     runs-on: ubuntu-latest

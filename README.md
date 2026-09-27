@@ -71,7 +71,7 @@ The desktop server binds only to `127.0.0.1`. Every API request requires a token
 
 Merging to `main` runs continuous integration checks. A successful run on `main` starts the release workflow. A manual release trigger also remains available.
 
-### Release 0.4.0
+### Release 0.4.1
 
 This release adds an updater module, packaged application icons, and improved player focus behavior.
 It also updates the release automation pipeline.

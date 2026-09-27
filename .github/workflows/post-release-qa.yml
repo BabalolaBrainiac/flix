@@ -27,11 +27,9 @@ name: Post-Release QA
 #
 # QA_INVITE_CODE is an environment secret on the "release" environment (the
 # same trust boundary release.yml already uses to publish): an invite code
-# created once with `./scripts/admin.sh invite --max 10` from `gateway/` and
-# stored with `gh secret set QA_INVITE_CODE --env release`. That script
-# stays a local, owner-run tool because it holds production Cloudflare D1
-# access; only the invite code it produced is a secret here, not the D1
-# access itself.
+# created with enough device capacity for both platform checks and stored with
+# `gh secret set QA_INVITE_CODE --env release`. Invite codes do not expire.
+# Replace this secret before its device capacity is full.
 
 on:
   release:

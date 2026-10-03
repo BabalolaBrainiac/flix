@@ -381,6 +381,29 @@ mod tests {
     }
 
     #[test]
+    fn skips_a_retryable_update_check_error() {
+        let body = json!({
+            "error": { "code": "UPDATE_CHECK_ERROR", "message": "rate limited", "retryable": true }
+        });
+        assert!(should_skip_update_check(StatusCode::BAD_GATEWAY, &body));
+    }
+
+    #[test]
+    fn fails_a_non_retryable_update_check_error() {
+        let body = json!({
+            "error": { "code": "UNAUTHORIZED", "message": "bad token", "retryable": false }
+        });
+        assert!(!should_skip_update_check(StatusCode::UNAUTHORIZED, &body));
+    }
+
+    #[test]
+    fn never_skips_a_successful_response() {
+        let body =
+            json!({ "current_version": "0.4.1", "latest_version": "0.4.1", "available": false });
+        assert!(!should_skip_update_check(StatusCode::OK, &body));
+    }
+
+    #[test]
     fn parses_optional_version_argument() {
         let args = vec![
             "qa_check".to_string(),
@@ -497,16 +520,51 @@ async fn assert_stream_serves_bytes(
     Ok(())
 }
 
+fn should_skip_update_check(status: StatusCode, body: &Value) -> bool {
+    !status.is_success() && body["error"]["retryable"].as_bool() == Some(true)
+}
+
+// This check calls GitHub's release API through Flix's own /api/update
+// route. That API rate-limits unauthenticated callers per source IP, and CI
+// runners share IP pools that can already be near that limit, so a rate
+// limit response here is an external condition, not a Flix regression.
+// Flix's own server already tells the two cases apart and marks a rate
+// limit as retryable, so this check trusts that classification instead of
+// re-deciding it: a retryable error is a warning, anything else still fails
+// the run.
 async fn check_update_discovery(
     client: &reqwest::Client,
     credential: &str,
     expected_version: Option<&str>,
 ) -> Result<()> {
-    let update = api(client, credential, Method::GET, "/api/update", None).await?;
-    let current_version = update["current_version"]
+    let url = format!("http://127.0.0.1:{PORT}/api/update");
+    let response = client
+        .get(&url)
+        .bearer_auth(credential)
+        .send()
+        .await
+        .context("GET /api/update failed")?;
+    let status = response.status();
+    let body: Value = response
+        .json()
+        .await
+        .with_context(|| format!("GET /api/update returned invalid JSON (status {status})"))?;
+
+    if !status.is_success() {
+        if should_skip_update_check(status, &body) {
+            println!(
+                "Update discovery skipped: {} ({status})",
+                body["error"]["message"]
+            );
+            return Ok(());
+        }
+        bail!("GET /api/update returned {status}: {body}");
+    }
+
+    let current_version = body["current_version"]
         .as_str()
         .context("Missing current_version in update response")?;
-    let latest_version = update["latest_version"]
+    let latest_version = body["latest_version"]
         .as_str()
         .context("Missing latest_version in update response")?;
     if let Some(expected) = expected_version {
@@ -514,7 +572,7 @@ async fn check_update_discovery(
             bail!("Expected current_version {expected}, got {current_version}");
         }
     }
-    println!("Update discovery confirmed: current={current_version}, latest={latest_version}, available={}", update["available"]);
+    println!("Update discovery confirmed: current={current_version}, latest={latest_version}, available={}", body["available"]);
     Ok(())
 }
 

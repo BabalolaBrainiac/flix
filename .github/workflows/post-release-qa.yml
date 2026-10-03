@@ -58,12 +58,29 @@ jobs:
       - name: Checkout the QA tooling
         uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || 'main' }}
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
+
+      - name: Probe gateway activation
+        env:
+          QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          http_code="$(curl -sS -o "$response_file" -w '%{http_code}' \
+            -X POST https://gateway.babalola.dev/v1/invites/redeem \
+            -H 'Content-Type: application/json' \
+            --data-binary "{\"invite_code\":\"$QA_INVITE_CODE\"}")"
+          content_type="$(file --brief --mime-type "$response_file")"
+          echo "Gateway activation probe: http=$http_code content_type=$content_type"
+          if [ "$http_code" != 200 ] || ! grep -q 'device_token' "$response_file"; then
+            exit 1
+          fi
 
       - name: Install ffmpeg
         run: |
@@ -113,7 +130,20 @@ jobs:
       - name: Run automated activation and playback QA
         env:
           QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
-        run: ./target/release/examples/qa_check --app "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop" --version "$EXPECTED_VERSION"
+          QA_INVITE_HASH_PREFIX: ${{ vars.QA_INVITE_HASH_PREFIX }}
+        run: |
+          set -euo pipefail
+          if command -v shasum >/dev/null; then
+            invite_hash="$(printf '%s' "$QA_INVITE_CODE" | shasum -a 256 | awk '{print $1}')"
+          else
+            invite_hash="$(printf '%s' "$QA_INVITE_CODE" | sha256sum | awk '{print $1}')"
+          fi
+          actual_prefix="${invite_hash:0:12}"
+          if [ "$actual_prefix" != "$QA_INVITE_HASH_PREFIX" ]; then
+            echo "QA invite secret mismatch: expected hash prefix $QA_INVITE_HASH_PREFIX, got $actual_prefix" >&2
+            exit 1
+          fi
+          ./target/release/examples/qa_check --app "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop" --version "$EXPECTED_VERSION"
 
       - name: Unmount the DMG
         if: always()
@@ -132,12 +162,30 @@ jobs:
       - name: Checkout the QA tooling
         uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || 'main' }}
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
+
+      - name: Probe gateway activation
+        shell: bash
+        env:
+          QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          http_code="$(curl -sS -o "$response_file" -w '%{http_code}' \
+            -X POST https://gateway.babalola.dev/v1/invites/redeem \
+            -H 'Content-Type: application/json' \
+            --data-binary "{\"invite_code\":\"$QA_INVITE_CODE\"}")"
+          content_type="$(file --brief --mime-type "$response_file")"
+          echo "Gateway activation probe: http=$http_code content_type=$content_type"
+          if [ "$http_code" != 200 ] || ! grep -q 'device_token' "$response_file"; then
+            exit 1
+          fi
 
       - name: Install ffmpeg
         shell: bash
@@ -279,7 +327,20 @@ jobs:
         shell: bash
         env:
           QA_INVITE_CODE: ${{ secrets.QA_INVITE_CODE }}
-        run: ./target/release/examples/qa_check.exe --app "$INSTALL_DIR/flix-desktop.exe" --version "$EXPECTED_VERSION"
+          QA_INVITE_HASH_PREFIX: ${{ vars.QA_INVITE_HASH_PREFIX }}
+        run: |
+          set -euo pipefail
+          if command -v shasum >/dev/null; then
+            invite_hash="$(printf '%s' "$QA_INVITE_CODE" | shasum -a 256 | awk '{print $1}')"
+          else
+            invite_hash="$(printf '%s' "$QA_INVITE_CODE" | sha256sum | awk '{print $1}')"
+          fi
+          actual_prefix="${invite_hash:0:12}"
+          if [ "$actual_prefix" != "$QA_INVITE_HASH_PREFIX" ]; then
+            echo "QA invite secret mismatch: expected hash prefix $QA_INVITE_HASH_PREFIX, got $actual_prefix" >&2
+            exit 1
+          fi
+          ./target/release/examples/qa_check.exe --app "$INSTALL_DIR/flix-desktop.exe" --version "$EXPECTED_VERSION"
 
   flag-regression:
     name: Flag a Post-Release Regression

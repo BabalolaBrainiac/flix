@@ -33,7 +33,7 @@ which = "8.0.5"
 regex = "1.13.1"
 tempfile = "3"
 percent-encoding = "2"
-rust-embed = { version = "8.5", features = ["mime-guess"] }
+rust-embed = { version = "8.5", features = ["mime-guess", "include-exclude"] }
 mime_guess = "2.0"
 keyring = { version = "3.6.1", features = ["apple-native", "windows-native"] }
 zip = { version = "2", default-features = false }

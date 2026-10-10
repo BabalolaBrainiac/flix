@@ -6,6 +6,7 @@ use librqbit::{
 };
 use std::{
     collections::HashSet,
+    num::NonZeroU32,
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -483,6 +484,58 @@ impl TorrentSession {
             .pause(&handle)
             .await
             .context("Failed to pause torrent")
+    }
+
+    /// Resumes a torrent paused by `pause`, continuing from the data already
+    /// on disk rather than downloading it again.
+    pub async fn unpause(&self, id: TorrentId) -> Result<()> {
+        let handle = self.handle(id).context("Torrent not found")?;
+        self.inner
+            .unpause(&handle)
+            .await
+            .context("Failed to resume torrent")
+    }
+
+    /// Caps this session's own download rate, or lifts the cap with `None`.
+    /// This reaches a live, lock-free rate limiter (`librqbit::Session::ratelimits`)
+    /// and takes effect immediately, including on a session that is already
+    /// downloading.
+    pub fn set_download_rate_limit(&self, bps: Option<u32>) {
+        self.inner
+            .ratelimits
+            .set_download_bps(bps.and_then(NonZeroU32::new));
+    }
+
+    /// Test-only: adds a torrent by connecting directly to `initial_peers`,
+    /// bypassing DHT and trackers, so a test can download from a local seed
+    /// deterministically and without a network dependency. Mirrors the
+    /// pattern this file's own tests already use below.
+    #[cfg(test)]
+    pub(crate) async fn add_bytes_with_peers(
+        &self,
+        bytes: Vec<u8>,
+        initial_peers: Vec<std::net::SocketAddr>,
+    ) -> Result<TorrentId> {
+        let response = self
+            .inner
+            .add_torrent(
+                AddTorrent::from_bytes(bytes),
+                Some(AddTorrentOptions {
+                    overwrite: true,
+                    initial_peers: Some(initial_peers),
+                    ..Default::default()
+                }),
+            )
+            .await?;
+        let (id, handle) = match response {
+            AddTorrentResponse::Added(id, handle)
+            | AddTorrentResponse::AlreadyManaged(id, handle) => (id, handle),
+            AddTorrentResponse::ListOnly(_) => {
+                return Err(anyhow!("ListOnly response, expected Added"))
+            }
+        };
+        handle.wait_until_initialized().await?;
+        Ok(id)
     }
 }
 

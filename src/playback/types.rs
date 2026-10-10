@@ -16,6 +16,13 @@ pub enum MediaRef {
         episode: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// The show's own name, separate from `title` (the episode's own
+        /// name). Without this, a display built from an episode alone (for
+        /// example a background-queue item, which has no surrounding show
+        /// header the way a title page does) can only show "S01E05", never
+        /// which show it belongs to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        show_title: Option<String>,
     },
 }
 
@@ -35,14 +42,21 @@ impl MediaRef {
                 season,
                 episode,
                 title,
+                show_title,
                 ..
             } => {
                 let formatted_ep = format!("S{:02}E{:02}", season, episode);
-                match title {
+                let episode_label = match title {
                     // Many catalogs number episodes without naming them - the
                     // code alone is a normal, complete label, not an error.
                     Some(t) if !t.trim().is_empty() => format!("{} · {}", formatted_ep, t.trim()),
                     _ => formatted_ep,
+                };
+                match show_title {
+                    Some(show) if !show.trim().is_empty() => {
+                        format!("{} · {}", show.trim(), episode_label)
+                    }
+                    _ => episode_label,
                 }
             }
         }

@@ -766,6 +766,7 @@ mod tests {
             season: 1,
             episode: 7,
             title: Some("New & Old".to_string()),
+            show_title: None,
         };
         let lookup = GatewaySubtitleLookup::from_media(&media).unwrap();
         assert_eq!(lookup.imdb_id, "tt7124066");

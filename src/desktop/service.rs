@@ -367,6 +367,22 @@ impl DesktopService {
     }
 
     pub async fn play(&self, command: PlayCommand) -> Result<OperationAccepted> {
+        let (media, source) = self.resolve_play_request(&command).await?;
+        let res = self
+            .coordinator
+            .start_playback_on(media, source, command.queue_seed, command.target)
+            .await;
+        Ok(res)
+    }
+
+    /// Resolves a `PlayCommand`'s source and media, shared by `play` (which
+    /// starts foreground playback) and `queue_add` (which starts background
+    /// buffering). `target` and `queue_seed` are play-specific and read
+    /// directly from `command` by whichever caller needs them.
+    async fn resolve_play_request(
+        &self,
+        command: &PlayCommand,
+    ) -> Result<(MediaRef, ResolvedSource)> {
         let source = if let Some(source_id) = &command.source_id {
             self.coordinator
                 .get_resolved_source(source_id)
@@ -397,7 +413,7 @@ impl DesktopService {
             return Err(anyhow!("Missing source_id or magnet in PlayCommand"));
         };
 
-        let media = command.media_ref.unwrap_or_else(|| {
+        let media = command.media_ref.clone().unwrap_or_else(|| {
             if let Some(seed) = &command.queue_seed {
                 if let Some(ep) = seed
                     .episodes
@@ -411,6 +427,7 @@ impl DesktopService {
                         season: ep.season,
                         episode: ep.episode,
                         title: ep.title.clone(),
+                        show_title: Some(seed.catalog_item.name.clone()),
                     }
                 } else {
                     MediaRef::Movie {
@@ -426,11 +443,27 @@ impl DesktopService {
             }
         });
 
-        let res = self
-            .coordinator
-            .start_playback_on(media, source, command.queue_seed, command.target)
-            .await;
-        Ok(res)
+        Ok((media, source))
+    }
+
+    /// Adds a background-buffering queue item from a play-style request.
+    /// Reuses `resolve_play_request` so "Add to queue" accepts exactly the
+    /// same source/media shape as "Play".
+    pub async fn queue_add(&self, command: PlayCommand) -> Result<String> {
+        let (media, source) = self.resolve_play_request(&command).await?;
+        self.coordinator.queue_add(media, source).await
+    }
+
+    pub async fn queue_list(&self) -> Vec<crate::playback::queue::QueueItemSnapshot> {
+        self.coordinator.queue_list().await
+    }
+
+    pub async fn queue_play(&self, id: &str) -> Result<OperationAccepted> {
+        self.coordinator.queue_play(id).await
+    }
+
+    pub async fn queue_remove(&self, id: &str) -> Result<()> {
+        self.coordinator.queue_remove(id).await
     }
 
     pub async fn next(&self, _command: NextEpisodeCommand) -> Result<NextEpisodeResponse> {

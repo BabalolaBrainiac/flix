@@ -96,6 +96,8 @@ export interface MediaRefEpisode {
   season: number;
   episode: number;
   title?: string;
+  /** The show's own name, separate from `title` (the episode's own name). */
+  show_title?: string;
 }
 
 export type MediaRef = MediaRefMovie | MediaRefEpisode;
@@ -162,6 +164,14 @@ export interface PlaybackStatusResponse {
 export interface OperationAccepted {
   operation_id: string;
   status: string;
+}
+
+export interface QueueItem {
+  id: string;
+  media: MediaRef;
+  state: 'buffering' | 'ready';
+  buffered_bytes: number;
+  target_bytes: number;
 }
 
 export interface DownloadEntrySummary {

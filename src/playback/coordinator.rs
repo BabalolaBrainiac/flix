@@ -1,4 +1,5 @@
 use super::preparation::{first_subtitle, prepare_with_subtitles};
+use super::queue;
 use crate::config::{Config, PlaybackCache};
 use crate::episode_queue::EpisodeQueue;
 use crate::media;
@@ -97,6 +98,12 @@ pub struct PlaybackCoordinator {
     operation_lock: Arc<Mutex<()>>,
     control_lock: Mutex<()>,
     source_map: Arc<RwLock<HashMap<String, SourceMapEntry>>>,
+    // Lock order, always acquired in this sequence and never the reverse:
+    // control_lock -> operation_lock -> active_session -> background_queue.
+    // background_queue's lock is never held across an await that re-enters
+    // start_playback_on/close_active_playback, so a queue operation cannot
+    // deadlock against a concurrent play/stop.
+    background_queue: Arc<Mutex<Vec<Arc<Mutex<queue::QueuedSession>>>>>,
 }
 
 impl PlaybackCoordinator {
@@ -112,6 +119,7 @@ impl PlaybackCoordinator {
             operation_lock: Arc::new(Mutex::new(())),
             control_lock: Mutex::new(()),
             source_map: Arc::new(RwLock::new(HashMap::new())),
+            background_queue: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -129,6 +137,218 @@ impl PlaybackCoordinator {
 
     pub fn subscribe(&self) -> watch::Receiver<PlaybackSnapshot> {
         self.snapshot_rx.clone()
+    }
+
+    /// Adds a background-buffering queue item for `source` and starts
+    /// buffering it immediately. Returns the new item's id. Errs with
+    /// "QUEUE_FULL" if `MAX_QUEUED_ITEMS` are already queued; the caller is
+    /// expected to show the user a clear, non-silent rejection rather than
+    /// evicting an existing item.
+    pub async fn queue_add(&self, media: MediaRef, source: ResolvedSource) -> Result<String> {
+        let cache = PlaybackCache::new()?;
+        let session = Arc::new(TorrentSession::new(cache.path()).await?);
+        let cancel_token = CancellationToken::new();
+        let (torrent_id, videos, position) =
+            load_torrent(&session, &source.magnet, source.file_index, &cancel_token).await?;
+        let video = videos
+            .get(position)
+            .cloned()
+            .context("The queued source has no playable video file")?;
+
+        let is_anime = source.is_anime || media.is_anime();
+        let id = Uuid::new_v4().to_string();
+        let item = Arc::new(Mutex::new(queue::QueuedSession::new(
+            id.clone(),
+            media,
+            source.quality,
+            is_anime,
+            session,
+            torrent_id,
+            video,
+            cache,
+        )));
+
+        {
+            let mut background_queue = self.background_queue.lock().await;
+            if background_queue.len() >= queue::MAX_QUEUED_ITEMS {
+                return Err(anyhow!("QUEUE_FULL"));
+            }
+            background_queue.push(item.clone());
+        }
+
+        self.spawn_queue_item_tasks(item);
+        Ok(id)
+    }
+
+    /// Runs one queued item's backoff guard alongside its buffer-to-
+    /// threshold reader. On success, the item stays queued until the user
+    /// plays it or removes it. On failure, removes the item immediately,
+    /// because it will never become ready.
+    fn spawn_queue_item_tasks(&self, item: Arc<Mutex<queue::QueuedSession>>) {
+        let background_queue = self.background_queue.clone();
+        let foreground = self.subscribe();
+
+        tokio::spawn(async move {
+            let (session, cancel) = {
+                let guard = item.lock().await;
+                (guard.session.clone(), guard.tasks_cancel.clone())
+            };
+            let backoff_guard = tokio::spawn(queue::run_backoff_guard(
+                foreground,
+                session,
+                cancel.clone(),
+            ));
+
+            let result = queue::buffer_to_threshold(item.clone()).await;
+            backoff_guard.abort();
+
+            if cancel.is_cancelled() {
+                // Played or removed while buffering: whoever cancelled it
+                // owns cleanup.
+                return;
+            }
+            if let Err(error) = result {
+                tracing::warn!("Background buffering failed: {error:#}");
+                background_queue
+                    .lock()
+                    .await
+                    .retain(|entry| !Arc::ptr_eq(entry, &item));
+            }
+        });
+    }
+
+    /// Lists every background-buffering queue item, most recently added
+    /// last.
+    pub async fn queue_list(&self) -> Vec<queue::QueueItemSnapshot> {
+        let background_queue = self.background_queue.lock().await;
+        let mut snapshots = Vec::with_capacity(background_queue.len());
+        for item in background_queue.iter() {
+            snapshots.push(item.lock().await.snapshot());
+        }
+        snapshots
+    }
+
+    /// Finds a queued item by id and removes it from the background queue,
+    /// without yet cancelling or promoting it. Shared by `queue_remove` and
+    /// `queue_play`, which differ only in what they do with the item once
+    /// they hold it.
+    async fn take_queue_item(&self, id: &str) -> Result<Arc<Mutex<queue::QueuedSession>>> {
+        let mut background_queue = self.background_queue.lock().await;
+        let mut found = None;
+        for (index, entry) in background_queue.iter().enumerate() {
+            if entry.lock().await.id == id {
+                found = Some(index);
+                break;
+            }
+        }
+        let Some(index) = found else {
+            return Err(anyhow!("Queued item not found"));
+        };
+        Ok(background_queue.remove(index))
+    }
+
+    /// Removes a queued item and cancels its buffering/backoff tasks
+    /// immediately.
+    pub async fn queue_remove(&self, id: &str) -> Result<()> {
+        let item = self.take_queue_item(id).await?;
+        item.lock().await.tasks_cancel.cancel();
+        Ok(())
+    }
+
+    /// Plays a queued item: promotes it to the foreground, resuming its
+    /// download from its buffered point rather than starting over. Runs
+    /// through the same operation-lock/cancellation protocol as a fresh
+    /// play (`start_playback_on`), so it cannot race a concurrent
+    /// `/api/play` or `/api/stop`.
+    pub async fn queue_play(self: &Arc<Self>, id: &str) -> Result<OperationAccepted> {
+        let item = self.take_queue_item(id).await?;
+        // Stop the item's own buffering/backoff tasks before
+        // promoting it: they must not keep dialing a rate limit or pausing
+        // a session that is about to become the foreground session.
+        item.lock().await.tasks_cancel.cancel();
+
+        let _control = self.control_lock.lock().await;
+        let operation_id = Uuid::new_v4().to_string();
+        let cancel_token = self.reset_cancellation_token().await;
+        let coordinator = Arc::clone(self);
+        let operation_lock = Arc::clone(&self.operation_lock);
+
+        tokio::spawn(async move {
+            let _operation_guard = operation_lock.lock_owned().await;
+            if cancel_token.is_cancelled() {
+                return;
+            }
+            coordinator.close_active_playback().await;
+            let result = tokio::select! {
+                biased;
+                _ = cancel_token.cancelled() => Err(anyhow!("Operation cancelled")),
+                result = coordinator.run_promote_queued_pipeline(item, cancel_token.clone()) => result,
+            };
+            coordinator.finish_background_operation(result).await;
+            coordinator.monitor_player().await;
+        });
+
+        Ok(OperationAccepted {
+            operation_id,
+            status: "accepted".to_string(),
+        })
+    }
+
+    /// Promotes an already-buffered queued item into the foreground
+    /// `ActiveSession`. Resumes its torrent from its buffered point
+    /// (`TorrentSession::unpause`) instead of re-adding it, and opens its
+    /// own stream server, since a queued item never runs one while it is
+    /// only buffering.
+    async fn run_promote_queued_pipeline(
+        &self,
+        item: Arc<Mutex<queue::QueuedSession>>,
+        cancel_token: CancellationToken,
+    ) -> Result<()> {
+        if cancel_token.is_cancelled() {
+            return Ok(());
+        }
+        let promoted = item.lock().await.take_for_promotion();
+
+        self.set_snapshot(PlaybackSnapshot::LoadingTorrent {
+            media: promoted.media.clone(),
+            quality: promoted.quality.clone(),
+        });
+
+        // Only an item that reached its 30% target was ever paused
+        // (queue::buffer_to_threshold pauses right after it stops reading).
+        // A still-Buffering item's torrent is already live: librqbit's
+        // unpause errs with "torrent is already live" if called on one
+        // that was never paused.
+        if promoted.state_at_promotion == queue::QueueItemState::Ready {
+            promoted.session.unpause(promoted.torrent_id).await?;
+        }
+        let server = stream_server::serve(promoted.session.clone()).await?;
+
+        if cancel_token.is_cancelled() {
+            return Ok(());
+        }
+
+        let mut active = ActiveSession {
+            target: PlaybackTarget::External,
+            browser_seen_at: None,
+            is_anime: promoted.is_anime,
+            media: promoted.media,
+            cache: promoted.cache,
+            session: promoted.session,
+            server,
+            torrent_id: promoted.torrent_id,
+            videos: vec![promoted.video],
+            position: 0,
+            player: None,
+            player_name: None,
+            episode_queue: None,
+            quality: promoted.quality,
+        };
+
+        self.launch_active_session(&mut active, Vec::new(), cancel_token)
+            .await?;
+        *self.active_session.lock().await = Some(Arc::new(Mutex::new(active)));
+        Ok(())
     }
 
     /// Forces the snapshot to an arbitrary value, bypassing real playback.
@@ -1112,6 +1332,12 @@ fn media_from_episode(current_media: &MediaRef, episode: &Episode) -> MediaRef {
             catalog_id.clone()
         }
     };
+    // The show does not change between episodes of the same queue, so carry
+    // its name forward rather than losing it on every episode transition.
+    let show_title = match current_media {
+        MediaRef::Episode { show_title, .. } => show_title.clone(),
+        MediaRef::Movie { .. } => None,
+    };
     MediaRef::Episode {
         catalog_id,
         stream_id: episode.stream_id.clone(),
@@ -1119,6 +1345,7 @@ fn media_from_episode(current_media: &MediaRef, episode: &Episode) -> MediaRef {
         season: episode.season,
         episode: episode.episode,
         title: episode.title.clone(),
+        show_title,
     }
 }
 

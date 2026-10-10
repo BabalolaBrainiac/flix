@@ -167,6 +167,7 @@
             <TitleView
               item={titleItem}
               activeProfileId={activeProfile?.id || null}
+              {playbackState}
               onPlayStarted={handlePlayStarted}
               onOpenProfilePicker={() => (showProfilePicker = true)}
               onBack={handleTitleBack}

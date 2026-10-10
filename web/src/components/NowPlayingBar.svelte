@@ -1,13 +1,68 @@
 <script lang="ts">
-  import type { PlaybackSnapshot } from '../lib/types';
+  import { onDestroy, onMount } from 'svelte';
+  import type { PlaybackSnapshot, QueueItem } from '../lib/types';
   import { nextEpisode, stopPlayback } from '../lib/api';
-  import { Square, SkipForward, AlertTriangle, Loader2 } from 'lucide-svelte';
+  import { playQueuedItem, queueItems, refreshQueue, removeQueuedItem } from '../lib/queue';
+  import { Square, SkipForward, AlertTriangle, Loader2, Play, X, ListVideo, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-svelte';
 
   export let snapshot: PlaybackSnapshot;
   export let onStateChange: () => void;
 
   let isStopping = false;
   let controlError = '';
+  let queueActionError = '';
+  let queuePollHandle: ReturnType<typeof setInterval> | undefined;
+
+  const QUEUE_COLLAPSED_KEY = 'flix.queueCollapsed';
+  let queueCollapsed = readQueueCollapsed();
+
+  // Storage can throw in a private window. The section then opens expanded.
+  function readQueueCollapsed(): boolean {
+    try {
+      return localStorage.getItem(QUEUE_COLLAPSED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function toggleQueueCollapsed() {
+    queueCollapsed = !queueCollapsed;
+    try {
+      localStorage.setItem(QUEUE_COLLAPSED_KEY, queueCollapsed ? '1' : '0');
+    } catch {
+      // The choice then applies to this page load only.
+    }
+  }
+
+  onMount(() => {
+    refreshQueue();
+    queuePollHandle = setInterval(refreshQueue, 3000);
+  });
+
+  onDestroy(() => {
+    if (queuePollHandle) clearInterval(queuePollHandle);
+  });
+
+  function episodeCode(media: QueueItem['media']): string {
+    if (media.type !== 'episode') return '';
+    return `S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}`;
+  }
+
+  function mediaTitle(media: QueueItem['media']): string {
+    if (media.type === 'movie') return media.title;
+    return media.show_title ?? episodeCode(media);
+  }
+
+  function mediaSubtitle(media: QueueItem['media']): string {
+    if (media.type !== 'episode') return '';
+    const code = episodeCode(media);
+    return media.show_title ? (media.title ? `${code} · ${media.title}` : code) : (media.title ?? '');
+  }
+
+  function bufferPercent(item: QueueItem): number {
+    if (item.target_bytes <= 0) return 0;
+    return Math.min(100, Math.round((item.buffered_bytes / item.target_bytes) * 100));
+  }
 
   async function handleStop() {
     isStopping = true;
@@ -32,80 +87,160 @@
     }
   }
 
+  async function handlePlayQueued(id: string) {
+    queueActionError = '';
+    try {
+      await playQueuedItem(id);
+      onStateChange();
+    } catch (error) {
+      queueActionError = error instanceof Error ? error.message : 'That item could not be played.';
+    }
+  }
+
+  async function handleRemoveQueued(id: string) {
+    queueActionError = '';
+    try {
+      await removeQueuedItem(id);
+    } catch (error) {
+      queueActionError = error instanceof Error ? error.message : 'That item could not be removed.';
+    }
+  }
+
+  // The browser player has its own controls, so the playback row hides for it.
+  $: showPlayback = snapshot.state !== 'idle' && snapshot.state !== 'browser';
+  $: hasQueue = $queueItems.length > 0;
   $: isBusy = snapshot.state !== 'idle' && snapshot.state !== 'playing' && snapshot.state !== 'failed' && snapshot.state !== 'stopping';
 </script>
 
-{#if snapshot.state !== 'idle' && snapshot.state !== 'browser'}
+{#if showPlayback || hasQueue}
   <aside
     class="now-playing-bar panel"
     class:is-playing={snapshot.state === 'playing'}
     class:is-failed={snapshot.state === 'failed'}
     class:is-busy={isBusy}
   >
-    <div class="bar-content">
-      <div class="info-section">
-        {#if isBusy}
-          <Loader2 size={18} class="spinner-icon status-busy" />
-        {:else if snapshot.state === 'playing'}
-          <span class="status-dot-playing"></span>
-        {:else if snapshot.state === 'failed'}
-          <AlertTriangle size={18} class="status-failed" />
-        {/if}
-
-        <div class="text-block">
-          {#if controlError}
-            <span class="now-sub status-failed-msg" role="alert">{controlError}</span>
-          {/if}
-          {#if snapshot.state === 'playing'}
-            <span class="now-title">{snapshot.title}</span>
-            <span class="now-sub">
-              Open in {snapshot.player_name}{snapshot.subtitle_ready ? '' : ' · No subtitles'}
-            </span>
-          {:else if snapshot.state === 'resolving_source'}
-            <span class="now-title">Resolving Source</span>
-            <span class="now-sub">Connecting to torrent providers...</span>
-          {:else if snapshot.state === 'loading_torrent'}
-            <span class="now-title">Loading Torrent</span>
-            <span class="now-sub">Fetching metadata and peers ({snapshot.quality})...</span>
-          {:else if snapshot.state === 'buffering'}
-            <span class="now-title">Buffering Video</span>
-            <span class="now-sub">{snapshot.file_name}</span>
-          {:else if snapshot.state === 'finding_subtitle'}
-            <span class="now-title">Finding English Subtitles</span>
-            <span class="now-sub">Searching cached sources and gateway...</span>
-          {:else if snapshot.state === 'downloading_subtitle'}
-            <span class="now-title">Downloading Subtitles</span>
-            <span class="now-sub">{snapshot.subtitle_name}</span>
-          {:else if snapshot.state === 'launching_player'}
-            <span class="now-title">Launching Player</span>
-            <span class="now-sub">Opening {snapshot.player_name}...</span>
-          {:else if snapshot.state === 'stopping'}
-            <span class="now-title">Stopping Playback</span>
-            <span class="now-sub">Terminating player process...</span>
+    {#if showPlayback}
+      <div class="bar-content">
+        <div class="info-section">
+          {#if isBusy}
+            <Loader2 size={18} class="spinner-icon status-busy" />
+          {:else if snapshot.state === 'playing'}
+            <span class="status-dot-playing"></span>
           {:else if snapshot.state === 'failed'}
-            <span class="now-title">Playback Failed</span>
-            <span class="now-sub status-failed-msg">{snapshot.error.message}</span>
+            <AlertTriangle size={18} class="status-failed" />
           {/if}
+
+          <div class="text-block">
+            {#if controlError}
+              <span class="now-sub status-failed-msg" role="alert">{controlError}</span>
+            {/if}
+            {#if snapshot.state === 'playing'}
+              <span class="now-title">{snapshot.title}</span>
+              <span class="now-sub">
+                Open in {snapshot.player_name}{snapshot.subtitle_ready ? '' : ' · No subtitles'}
+              </span>
+            {:else if snapshot.state === 'resolving_source'}
+              <span class="now-title">Resolving Source</span>
+              <span class="now-sub">Connecting to torrent providers...</span>
+            {:else if snapshot.state === 'loading_torrent'}
+              <span class="now-title">Loading Torrent</span>
+              <span class="now-sub">Fetching metadata and peers ({snapshot.quality})...</span>
+            {:else if snapshot.state === 'buffering'}
+              <span class="now-title">Buffering Video</span>
+              <span class="now-sub">{snapshot.file_name}</span>
+            {:else if snapshot.state === 'finding_subtitle'}
+              <span class="now-title">Finding English Subtitles</span>
+              <span class="now-sub">Searching cached sources and gateway...</span>
+            {:else if snapshot.state === 'downloading_subtitle'}
+              <span class="now-title">Downloading Subtitles</span>
+              <span class="now-sub">{snapshot.subtitle_name}</span>
+            {:else if snapshot.state === 'launching_player'}
+              <span class="now-title">Launching Player</span>
+              <span class="now-sub">Opening {snapshot.player_name}...</span>
+            {:else if snapshot.state === 'stopping'}
+              <span class="now-title">Stopping Playback</span>
+              <span class="now-sub">Terminating player process...</span>
+            {:else if snapshot.state === 'failed'}
+              <span class="now-title">Playback Failed</span>
+              <span class="now-sub status-failed-msg">{snapshot.error.message}</span>
+            {/if}
+          </div>
+        </div>
+
+        <div class="controls-section">
+          {#if snapshot.state === 'playing' && snapshot.has_next}
+            <button class="control-btn" on:click={handleNext} title="Next Episode">
+              <SkipForward size={16} /> Next
+            </button>
+          {/if}
+
+          <button
+            class="control-btn btn-stop"
+            on:click={handleStop}
+            disabled={isStopping}
+            title={snapshot.state === 'failed' ? 'Dismiss' : 'Stop Playback'}
+          >
+            <Square size={14} /> {snapshot.state === 'failed' ? 'Dismiss' : 'Stop'}
+          </button>
         </div>
       </div>
+    {/if}
 
-      <div class="controls-section">
-        {#if snapshot.state === 'playing' && snapshot.has_next}
-          <button class="control-btn" on:click={handleNext} title="Next Episode">
-            <SkipForward size={16} /> Next
-          </button>
-        {/if}
-
+    {#if hasQueue}
+      <div class="queue-strip" class:has-playback={showPlayback}>
         <button
-          class="control-btn btn-stop"
-          on:click={handleStop}
-          disabled={isStopping}
-          title={snapshot.state === 'failed' ? 'Dismiss' : 'Stop Playback'}
+          class="queue-strip-header"
+          on:click={toggleQueueCollapsed}
+          aria-expanded={!queueCollapsed}
+          title={queueCollapsed ? 'Show queue' : 'Hide queue'}
         >
-          <Square size={14} /> {snapshot.state === 'failed' ? 'Dismiss' : 'Stop'}
+          <ListVideo size={13} />
+          <span>Up Next · {$queueItems.length}/2</span>
+          {#if queueCollapsed}<ChevronUp size={13} />{:else}<ChevronDown size={13} />{/if}
         </button>
+        {#if !queueCollapsed}
+          {#if queueActionError}
+            <span class="now-sub status-failed-msg" role="alert">{queueActionError}</span>
+          {/if}
+          {#each $queueItems as item (item.id)}
+            <div class="queue-row">
+              <div class="queue-row-status">
+                {#if item.state === 'ready'}
+                  <CheckCircle2 size={16} class="queue-status-ready" />
+                {:else}
+                  <Loader2 size={16} class="spinner-icon queue-status-buffering" />
+                {/if}
+              </div>
+              <div class="queue-row-text">
+                <span class="queue-row-title">{mediaTitle(item.media)}</span>
+                {#if mediaSubtitle(item.media)}
+                  <span class="queue-row-subtitle">{mediaSubtitle(item.media)}</span>
+                {/if}
+                <div class="queue-row-progress">
+                  <div class="queue-row-progress-fill" class:is-ready={item.state === 'ready'} style="width: {bufferPercent(item)}%"></div>
+                </div>
+              </div>
+              <div class="queue-row-actions">
+                <button
+                  class="queue-pill-btn"
+                  on:click={() => handlePlayQueued(item.id)}
+                  title="Play now"
+                >
+                  <Play size={13} />
+                </button>
+                <button
+                  class="queue-pill-btn"
+                  on:click={() => handleRemoveQueued(item.id)}
+                  title="Remove from queue"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            </div>
+          {/each}
+        {/if}
       </div>
-    </div>
+    {/if}
   </aside>
 {/if}
 
@@ -250,5 +385,124 @@
   @keyframes spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
+  }
+
+  .queue-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .queue-strip.has-playback {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .queue-strip-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    padding: 0;
+    align-self: flex-start;
+  }
+
+  .queue-strip-header:hover {
+    color: var(--text-primary);
+  }
+
+  .queue-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+  }
+
+  .queue-row-status {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  :global(.queue-status-ready) {
+    color: var(--status-green);
+  }
+
+  :global(.queue-status-buffering) {
+    color: var(--text-secondary);
+  }
+
+  .queue-row-text {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .queue-row-title {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .queue-row-subtitle {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .queue-row-progress {
+    height: 3px;
+    border-radius: var(--radius-full);
+    background: var(--border-subtle);
+    overflow: hidden;
+    margin-top: 2px;
+  }
+
+  .queue-row-progress-fill {
+    height: 100%;
+    background: var(--text-muted);
+    transition: width var(--transition-smooth);
+  }
+
+  .queue-row-progress-fill.is-ready {
+    background: var(--status-green);
+  }
+
+  .queue-row-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .queue-pill-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--control-fill);
+    color: var(--text-primary);
+  }
+
+  .queue-pill-btn:hover {
+    background: var(--control-fill-hover);
   }
 </style>

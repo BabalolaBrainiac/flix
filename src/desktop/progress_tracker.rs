@@ -162,6 +162,7 @@ mod tests {
             season,
             episode: episode_no,
             title: None,
+            show_title: None,
         }
     }
 

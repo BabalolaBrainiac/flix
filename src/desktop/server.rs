@@ -8,13 +8,13 @@ use crate::desktop::types::{
 use anyhow::{Context, Result};
 use axum::{
     body::Body,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use futures_util::stream::{self, Stream};
@@ -31,8 +31,12 @@ use tokio::sync::broadcast;
 use tracing;
 use uuid::Uuid;
 
+// .gitkeep only exists so a fresh checkout has this directory present
+// before `npm run build` runs (see web/dist/.gitkeep and .gitignore); it is
+// not a real asset and must never ship inside the binary.
 #[derive(RustEmbed)]
 #[folder = "web/dist/"]
+#[exclude = "*.gitkeep"]
 struct WebAssets;
 
 #[derive(Clone)]
@@ -143,6 +147,9 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/title", post(handle_title_lookup))
         .route("/api/streams", post(handle_streams))
         .route("/api/play", post(handle_play))
+        .route("/api/queue", get(handle_queue_list).post(handle_queue_add))
+        .route("/api/queue/{id}/play", post(handle_queue_play))
+        .route("/api/queue/{id}", delete(handle_queue_remove))
         .route("/api/browser/event", post(handle_browser_event))
         .route("/api/next", post(handle_next))
         .route("/api/stop", post(handle_stop))
@@ -596,6 +603,117 @@ async fn handle_play(
         )
     })?;
     Ok((StatusCode::ACCEPTED, Json(res)))
+}
+
+async fn handle_queue_add(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(command): Json<PlayCommand>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let id = state.service.queue_add(command).await.map_err(|error| {
+        if error.to_string() == "QUEUE_FULL" {
+            return api_error(
+                StatusCode::CONFLICT,
+                "QUEUE_FULL",
+                "The background queue already has the maximum number of items",
+                false,
+            );
+        }
+        tracing::error!("queue add error: {error:#}");
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "QUEUE_ADD_ERROR",
+            "Failed to add the item to the background queue",
+            true,
+        )
+    })?;
+    Ok((StatusCode::ACCEPTED, Json(json!({ "id": id }))))
+}
+
+async fn handle_queue_list(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let items: Vec<_> = state
+        .service
+        .queue_list()
+        .await
+        .into_iter()
+        .map(queue_item_snapshot_json)
+        .collect();
+    Ok(Json(json!({ "items": items })))
+}
+
+async fn handle_queue_play(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    let res = state.service.queue_play(&id).await.map_err(|error| {
+        if error.to_string() == "Queued item not found" {
+            return api_error(
+                StatusCode::NOT_FOUND,
+                "QUEUE_ITEM_NOT_FOUND",
+                "That queued item no longer exists",
+                false,
+            );
+        }
+        tracing::error!("queue play error: {error:#}");
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "QUEUE_PLAY_ERROR",
+            "Failed to play the queued item",
+            true,
+        )
+    })?;
+    Ok((StatusCode::ACCEPTED, Json(res)))
+}
+
+async fn handle_queue_remove(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, Response> {
+    validate_origin_and_token(&headers, &state)
+        .map_err(|e| api_error(e, "UNAUTHORIZED", "Unauthorized", false))?;
+    state.service.queue_remove(&id).await.map_err(|error| {
+        if error.to_string() == "Queued item not found" {
+            return api_error(
+                StatusCode::NOT_FOUND,
+                "QUEUE_ITEM_NOT_FOUND",
+                "That queued item no longer exists",
+                false,
+            );
+        }
+        tracing::error!("queue remove error: {error:#}");
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "QUEUE_REMOVE_ERROR",
+            "Failed to remove the queued item",
+            true,
+        )
+    })?;
+    Ok(Json(json!({ "success": true })))
+}
+
+fn queue_item_snapshot_json(item: crate::playback::queue::QueueItemSnapshot) -> serde_json::Value {
+    let state = match item.state {
+        crate::playback::queue::QueueItemState::Buffering => "buffering",
+        crate::playback::queue::QueueItemState::Ready => "ready",
+    };
+    json!({
+        "id": item.id,
+        "media": item.media,
+        "state": state,
+        "buffered_bytes": item.buffered_bytes,
+        "target_bytes": item.target_bytes,
+    })
 }
 
 async fn handle_next(
@@ -1277,4 +1395,22 @@ async fn handle_static_or_spa(
     }
 
     StatusCode::NOT_FOUND.into_response()
+}
+
+#[cfg(test)]
+mod web_assets_tests {
+    use super::WebAssets;
+
+    #[test]
+    fn never_embeds_gitkeep_into_the_binary() {
+        // web/dist/.gitkeep exists only so a fresh checkout has this
+        // directory present before `npm run build` runs; it must never
+        // ship inside the app.
+        assert!(WebAssets::get(".gitkeep").is_none());
+    }
+
+    #[test]
+    fn still_embeds_the_real_built_assets() {
+        assert!(WebAssets::get("index.html").is_some());
+    }
 }

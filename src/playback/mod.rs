@@ -3,6 +3,7 @@ mod browser;
 pub mod coordinator;
 pub mod language;
 mod preparation;
+pub mod queue;
 pub mod types;
 
 pub use coordinator::*;

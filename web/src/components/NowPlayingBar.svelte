@@ -207,6 +207,8 @@
               <div class="queue-row-status">
                 {#if item.state === 'ready'}
                   <CheckCircle2 size={16} class="queue-status-ready" />
+                {:else if item.state === 'failed'}
+                  <AlertTriangle size={16} class="queue-status-failed" aria-label="Buffering failed" />
                 {:else}
                   <Loader2 size={16} class="spinner-icon queue-status-buffering" />
                 {/if}
@@ -439,6 +441,10 @@
 
   :global(.queue-status-buffering) {
     color: var(--text-secondary);
+  }
+
+  :global(.queue-status-failed) {
+    color: var(--status-red);
   }
 
   .queue-row-text {

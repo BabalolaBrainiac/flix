@@ -41,6 +41,9 @@ const BUFFER_READ_CHUNK: usize = 256 * 1024;
 pub enum QueueItemState {
     Buffering,
     Ready,
+    /// Background buffering stopped with an error. The item stays in the
+    /// queue so the user sees it and can still play or remove it.
+    Failed,
 }
 
 /// A point-in-time view of one queued item, safe to serialize for the API
@@ -138,6 +141,10 @@ impl QueuedSession {
 
     pub fn state(&self) -> QueueItemState {
         *self.state_tx.borrow()
+    }
+
+    pub fn mark_failed(&self) {
+        self.state_tx.send_replace(QueueItemState::Failed);
     }
 
     pub fn target_bytes(&self) -> u64 {

@@ -181,11 +181,10 @@ impl PlaybackCoordinator {
     }
 
     /// Runs one queued item's backoff guard alongside its buffer-to-
-    /// threshold reader. On success, the item stays queued until the user
-    /// plays it or removes it. On failure, removes the item immediately,
-    /// because it will never become ready.
+    /// threshold reader. The item stays queued until the user plays it or
+    /// removes it. A buffering failure marks the item failed instead of
+    /// removing it, so a queued item never disappears without a user action.
     fn spawn_queue_item_tasks(&self, item: Arc<Mutex<queue::QueuedSession>>) {
-        let background_queue = self.background_queue.clone();
         let foreground = self.subscribe();
 
         tokio::spawn(async move {
@@ -209,10 +208,7 @@ impl PlaybackCoordinator {
             }
             if let Err(error) = result {
                 tracing::warn!("Background buffering failed: {error:#}");
-                background_queue
-                    .lock()
-                    .await
-                    .retain(|entry| !Arc::ptr_eq(entry, &item));
+                item.lock().await.mark_failed();
             }
         });
     }
@@ -1522,6 +1518,77 @@ mod tests {
         })
         .into();
         assert_eq!(safe_error_for_pipeline(&error).code, "PLAYER_START_FAILED");
+    }
+
+    // A queued item must never disappear without a user action. A
+    // buffering failure (here: a file index the torrent does not have)
+    // must keep the item in the queue, marked failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn keeps_a_queued_item_whose_buffering_fails() {
+        use crate::playback::queue::{QueueItemState, QueuedSession};
+        use crate::playback::types::MediaRef;
+        use crate::session::TorrentSession;
+        use librqbit::{create_torrent, CreateTorrentOptions};
+        use tokio::sync::Mutex;
+
+        let directory = tempfile::tempdir().unwrap();
+        let coordinator = Arc::new(super::PlaybackCoordinator::new(Config {
+            data_dir: directory.path().join("data"),
+            download_dir: directory.path().join("downloads"),
+        }));
+
+        let content_path = directory.path().join("content.bin");
+        std::fs::write(&content_path, vec![1u8; 64 * 1024]).unwrap();
+        let torrent_bytes = create_torrent(&content_path, CreateTorrentOptions::default())
+            .await
+            .unwrap()
+            .as_bytes()
+            .unwrap()
+            .to_vec();
+        let session = TorrentSession::new(&directory.path().join("queued"))
+            .await
+            .unwrap();
+        let torrent_id = session
+            .add_bytes_with_peers(torrent_bytes, Vec::new())
+            .await
+            .unwrap();
+        let mut video = session.files(torrent_id).unwrap().remove(0);
+        video.index = 99;
+
+        let item = Arc::new(Mutex::new(QueuedSession::new(
+            "queued-1".to_string(),
+            MediaRef::Movie {
+                catalog_id: "tt0111161".to_string(),
+                title: "x".to_string(),
+            },
+            "1080p".to_string(),
+            false,
+            Arc::new(session),
+            torrent_id,
+            video,
+            crate::config::PlaybackCache::new().unwrap(),
+        )));
+        coordinator.background_queue.lock().await.push(item.clone());
+        coordinator.spawn_queue_item_tasks(item);
+
+        let items = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let items = coordinator.queue_list().await;
+                if items
+                    .iter()
+                    .all(|item| item.state != QueueItemState::Buffering)
+                {
+                    return items;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("buffering must fail quickly for a missing file index");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "queued-1");
+        assert_eq!(items[0].state, QueueItemState::Failed);
     }
 
     #[tokio::test]

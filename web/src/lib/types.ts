@@ -169,7 +169,7 @@ export interface OperationAccepted {
 export interface QueueItem {
   id: string;
   media: MediaRef;
-  state: 'buffering' | 'ready';
+  state: 'buffering' | 'ready' | 'failed';
   buffered_bytes: number;
   target_bytes: number;
 }

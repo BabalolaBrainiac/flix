@@ -71,10 +71,17 @@ The desktop server binds only to `127.0.0.1`. Every API request requires a token
 
 Merging to `main` runs continuous integration checks. A successful run on `main` starts the release workflow. A manual release trigger also remains available.
 
-### Release 0.4.1
+### Release 0.5.0
 
-This release adds an updater module, packaged application icons, and improved player focus behavior.
-It also updates the release automation pipeline.
+This release adds a background playback queue. Use "Add to Queue" on a title to queue up to two items.
+A queued item downloads the first 30% of its file while the current item plays. It slows down when the current stream needs bandwidth.
+A queued item stays in the queue until you play it or remove it. If background download fails, the item stays and shows a failed mark.
+The queue is in memory. It does not persist after Flix closes.
+
+This release also fixes these problems:
+
+- Episode subtitle search now uses the series IMDb ID, so episodes get the correct subtitles.
+- Post-release QA uses the correct invite secret and respects the update-check rate limit.
 
 The unsigned installers are `Flix-macOS-universal.dmg` and `Flix-Windows-x64-Setup.exe`.
 The macOS installer supports Apple silicon and Intel Macs. The Windows installer targets x64 systems.

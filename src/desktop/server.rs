@@ -706,6 +706,7 @@ fn queue_item_snapshot_json(item: crate::playback::queue::QueueItemSnapshot) -> 
     let state = match item.state {
         crate::playback::queue::QueueItemState::Buffering => "buffering",
         crate::playback::queue::QueueItemState::Ready => "ready",
+        crate::playback::queue::QueueItemState::Failed => "failed",
     };
     json!({
         "id": item.id,

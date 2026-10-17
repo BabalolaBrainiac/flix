@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
   import { getEpisodes, getStreams, play } from '../lib/api';
-  import type { CatalogItemSummary, EpisodeSummary, StreamSummary, PlayCommand } from '../lib/types';
+  import type { CatalogItemSummary, EpisodeSummary, StreamSummary, PlayCommand, PlaybackSnapshot } from '../lib/types';
+  import { addToQueue } from '../lib/queue';
   import {
     membership,
     refreshMembership,
@@ -15,14 +16,19 @@
     titleRefOf,
     STATUS_LABELS,
   } from '../lib/library';
-  import { Film, Tv, Play, ArrowLeft, Loader2, ChevronRight, ChevronDown, Bookmark, X, Clock, PlayCircle, CheckCircle2, User, Users, HardDrive } from 'lucide-svelte';
+  import { Film, Tv, Play, ArrowLeft, Loader2, ChevronRight, ChevronDown, Bookmark, X, Clock, PlayCircle, CheckCircle2, User, Users, HardDrive, ListPlus } from 'lucide-svelte';
   import AddToListPopover from './AddToListPopover.svelte';
 
   export let item: CatalogItemSummary;
   export let activeProfileId: string | null = null;
+  export let playbackState: PlaybackSnapshot = { state: 'idle' };
   export let onPlayStarted: () => void;
   export let onOpenProfilePicker: () => void = () => {};
   export let onBack: () => void;
+
+  $: somethingIsPlaying = playbackState.state !== 'idle';
+  let queueAddState: 'idle' | 'adding' | 'added' | 'error' = 'idle';
+  let queueErrorMessage = '';
 
   const STATUS_OPTIONS = [
     { key: 'to_watch', icon: Clock },
@@ -208,6 +214,7 @@
       season: selectedEpisode.season,
       episode: selectedEpisode.episode,
       title: selectedEpisode.title,
+      show_title: selectedItem.name,
     };
   }
 
@@ -234,6 +241,27 @@
       if (request === streamRequest) actionMessage = `Playback failed: ${e.message}`;
     } finally {
       isPreparingPlayback = false;
+    }
+  }
+
+  async function handleAddToQueue(stream: StreamSummary) {
+    if (needsEpisode && !selectedEpisode) return;
+    queueAddState = 'adding';
+    queueErrorMessage = '';
+    try {
+      const command: PlayCommand = {
+        source_id: stream.source_id,
+        file_index: stream.file_index,
+        media_ref: mediaRefFor(stream),
+      };
+      await addToQueue(command);
+      queueAddState = 'added';
+      setTimeout(() => {
+        if (queueAddState === 'added') queueAddState = 'idle';
+      }, 2500);
+    } catch (e: any) {
+      queueAddState = 'error';
+      queueErrorMessage = `Could not add to queue: ${e.message}`;
     }
   }
 
@@ -447,6 +475,24 @@
             </div>
           </div>
           <div class="stream-actions">
+            {#if somethingIsPlaying}
+              <button
+                class="btn-queue"
+                class:is-added={queueAddState === 'added'}
+                class:is-error={queueAddState === 'error'}
+                on:click={() => handleAddToQueue(recommendedStream)}
+                disabled={queueAddState === 'adding'}
+                title="Buffer this in the background while the current video keeps playing"
+              >
+                {#if queueAddState === 'adding'}
+                  <Loader2 size={15} class="spinner-icon" /> Adding…
+                {:else if queueAddState === 'added'}
+                  <CheckCircle2 size={15} /> Added
+                {:else}
+                  <ListPlus size={15} /> Add to Queue
+                {/if}
+              </button>
+            {/if}
             <button
               class="btn-play"
               on:click={() => handlePlayStream(recommendedStream)}
@@ -455,6 +501,9 @@
               {#if isPreparingPlayback}<Loader2 size={16} class="spinner-icon" /> Preparing…{:else}<Play size={16} /> Play{/if}
             </button>
           </div>
+          {#if queueAddState === 'error'}
+            <span class="queue-action-message">{queueErrorMessage}</span>
+          {/if}
         </div>
       {/if}
 
@@ -902,6 +951,48 @@
     display: flex;
     gap: 8px;
     margin-left: auto;
+  }
+
+  .queue-action-message {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    font-size: 0.78rem;
+    color: var(--status-red);
+  }
+
+  .btn-queue {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px;
+    background: transparent;
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.88rem;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    transition: all var(--transition-fast);
+  }
+
+  .btn-queue:hover:not(:disabled) {
+    background: var(--control-fill);
+    border-color: var(--border-highlight);
+  }
+
+  .btn-queue:disabled {
+    opacity: 0.7;
+    cursor: wait;
+  }
+
+  .btn-queue.is-added {
+    border-color: var(--status-green);
+    color: var(--status-green);
+  }
+
+  .btn-queue.is-error {
+    border-color: var(--status-red);
+    color: var(--status-red);
   }
 
   .btn-play {

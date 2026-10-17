@@ -178,6 +178,29 @@ export async function play(command: PlayCommand): Promise<OperationAccepted> {
   });
 }
 
+export async function addToQueue(command: PlayCommand): Promise<{ id: string }> {
+  return request('/api/queue', {
+    method: 'POST',
+    body: JSON.stringify(command),
+  });
+}
+
+export async function listQueue(): Promise<{ items: import('./types').QueueItem[] }> {
+  return request('/api/queue');
+}
+
+export async function playQueued(id: string): Promise<OperationAccepted> {
+  return request(`/api/queue/${encodeURIComponent(id)}/play`, {
+    method: 'POST',
+  });
+}
+
+export async function removeFromQueue(id: string): Promise<{ success: boolean }> {
+  return request(`/api/queue/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function nextEpisode(): Promise<PlaybackStatusResponse> {
   return request('/api/next', {
     method: 'POST',

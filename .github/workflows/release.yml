@@ -139,12 +139,50 @@ jobs:
         run: |
           cargo build --locked --release --features web-ui --target aarch64-apple-darwin --bin flix-desktop
           cargo build --locked --release --features web-ui --target x86_64-apple-darwin --bin flix-desktop
-          mkdir -p target/universal-apple-darwin/release
-          lipo -create \
+          bash scripts/package-macos.sh \
             target/aarch64-apple-darwin/release/flix-desktop \
             target/x86_64-apple-darwin/release/flix-desktop \
-            -output target/universal-apple-darwin/release/flix-desktop
-          cargo packager --release --formats dmg --target universal-apple-darwin --binaries-dir target/universal-apple-darwin/release --out-dir target/packager
+            target/packager
+
+      - name: Verify macOS app launch before release
+        if: matrix.os == 'macos-latest'
+        run: |
+          set -euo pipefail
+          mount_directory="$(mktemp -d)"
+          install_directory="$(mktemp -d)"
+          app_pid=""
+
+          cleanup() {
+            if [ -n "$app_pid" ]; then
+              kill -TERM "$app_pid" 2>/dev/null || true
+            fi
+            hdiutil detach "$mount_directory" -quiet 2>/dev/null || true
+            rmdir "$mount_directory" 2>/dev/null || true
+            rm -rf "$install_directory"
+          }
+          trap cleanup EXIT
+
+          hdiutil attach \
+            target/packager/Flix-macOS-universal.dmg \
+            -mountpoint "$mount_directory" \
+            -nobrowse \
+            -quiet
+
+          ditto "$mount_directory/Flix.app" "$install_directory/Flix.app"
+          app_path="$install_directory/Flix.app"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          open -n "$app_path" --args --no-open
+
+          for _ in {1..15}; do
+            app_pid="$(pgrep -f "$app_path/Contents/MacOS/flix-desktop" | head -n 1 || true)"
+            if [ -n "$app_pid" ] && lsof -nP -a -p "$app_pid" -iTCP -sTCP:LISTEN | grep -q '127.0.0.1'; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "The packaged Flix app did not start its local server." >&2
+          exit 1
 
       - name: Build Windows NSIS Installer
         if: matrix.os == 'windows-latest'

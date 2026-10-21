@@ -123,9 +123,41 @@ jobs:
           test -f "$MOUNT_DIR/Flix.app/Contents/Info.plist"
           test -x "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop"
           test -f "$MOUNT_DIR/Flix.app/Contents/Resources/flix.icns"
+          codesign --verify --deep --strict --verbose=2 "$MOUNT_DIR/Flix.app"
           VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$MOUNT_DIR/Flix.app/Contents/Info.plist")"
           [ "$VERSION" = "$EXPECTED_VERSION" ] || { echo "Expected version $EXPECTED_VERSION in Info.plist, got $VERSION" >&2; exit 1; }
+          INSTALL_DIR="$RUNNER_TEMP/flix-install"
+          rm -rf "$INSTALL_DIR"
+          mkdir -p "$INSTALL_DIR"
+          ditto "$MOUNT_DIR/Flix.app" "$INSTALL_DIR/Flix.app"
+          codesign --verify --deep --strict --verbose=2 "$INSTALL_DIR/Flix.app"
           echo "MOUNT_DIR=$MOUNT_DIR" >> "$GITHUB_ENV"
+          echo "INSTALL_DIR=$INSTALL_DIR" >> "$GITHUB_ENV"
+
+      - name: Verify installed app launch
+        run: |
+          set -euo pipefail
+          app_path="$INSTALL_DIR/Flix.app"
+          app_pid=""
+
+          cleanup() {
+            if [ -n "$app_pid" ]; then
+              kill -TERM "$app_pid" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          open -n "$app_path" --args --no-open
+          for _ in {1..15}; do
+            app_pid="$(pgrep -f "$app_path/Contents/MacOS/flix-desktop" | head -n 1 || true)"
+            if [ -n "$app_pid" ] && lsof -nP -a -p "$app_pid" -iTCP -sTCP:LISTEN | grep -q '127.0.0.1'; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "The installed Flix app did not start its local server." >&2
+          exit 1
 
       - name: Run automated activation and playback QA
         env:
@@ -143,11 +175,13 @@ jobs:
             echo "QA invite secret mismatch: expected hash prefix $QA_INVITE_HASH_PREFIX, got $actual_prefix" >&2
             exit 1
           fi
-          ./target/release/examples/qa_check --app "$MOUNT_DIR/Flix.app/Contents/MacOS/flix-desktop" --version "$EXPECTED_VERSION"
+          ./target/release/examples/qa_check --app "$INSTALL_DIR/Flix.app/Contents/MacOS/flix-desktop" --version "$EXPECTED_VERSION"
 
       - name: Unmount the DMG
         if: always()
-        run: hdiutil detach "$MOUNT_DIR" -quiet || true
+        run: |
+          hdiutil detach "$MOUNT_DIR" -quiet || true
+          rm -rf "$INSTALL_DIR"
 
   qa-windows:
     name: Post-Release QA (Windows)

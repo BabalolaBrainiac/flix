@@ -2,6 +2,9 @@ use std::path::PathBuf;
 
 pub fn detect() -> Vec<super::Player> {
     let mut players = Vec::new();
+    if let Some(embedded) = super::embedded::detected_player() {
+        players.push(embedded);
+    }
     if let Ok(path) = which::which("mpv") {
         players.push(player(super::PlayerKind::Mpv, path));
     } else if let Some(path) = known_mpv_paths().into_iter().find(|path| path.is_file()) {

@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
+#[cfg(not(target_os = "ios"))]
 use keyring::Entry;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+#[cfg(not(target_os = "ios"))]
 const KEYRING_SERVICE: &str = "flix_desktop_gateway";
+#[cfg(not(target_os = "ios"))]
 const KEYRING_USER: &str = "device_token";
 const TOKEN_FILE: &str = "device_token";
 
@@ -81,6 +84,7 @@ pub fn delete_device_token() -> Result<()> {
         Err(error) => tracing::warn!("Could not remove the device token file: {error}"),
     }
     // Also clear a token an older keychain-based build may have left behind.
+    #[cfg(not(target_os = "ios"))]
     if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USER) {
         let _ = entry.delete_credential();
     }

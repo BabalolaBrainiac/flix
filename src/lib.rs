@@ -6,6 +6,7 @@ pub mod cli_search;
 pub mod config;
 pub mod desktop;
 pub mod episode_queue;
+pub mod ios;
 pub mod library;
 pub mod media;
 pub mod meta;

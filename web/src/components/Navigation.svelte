@@ -390,6 +390,7 @@
     position: sticky;
     top: 0;
     z-index: 50;
+    padding-top: env(safe-area-inset-top, 0px);
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-subtle);
     transition: background-color var(--transition-fast);

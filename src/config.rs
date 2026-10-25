@@ -91,6 +91,13 @@ impl PlaybackCache {
 
 /// Returns the per-user data directory that Flix uses for state.
 pub fn data_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "ios")]
+    if let Some(home) = std::env::var_os("HOME") {
+        return Ok(PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("flix"));
+    }
     let proj_dirs =
         ProjectDirs::from("", "", "flix").context("Could not determine project directories")?;
     Ok(proj_dirs.data_dir().to_path_buf())

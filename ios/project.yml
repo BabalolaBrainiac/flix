@@ -1,0 +1,82 @@
+name: Flix
+options:
+  bundleIdPrefix: com.babalolabrainiac
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+
+packages:
+  MPVKit:
+    url: https://github.com/mpvkit/MPVKit.git
+    from: 1.0.0
+
+targets:
+  Flix:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: Flix
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.babalolabrainiac.flix
+        PRODUCT_NAME: Flix
+        MARKETING_VERSION: "0.5.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_OBJC_BRIDGING_HEADER: "$(PROJECT_DIR)/Flix/Flix-Bridging-Header.h"
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../target/aarch64-apple-ios/release"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lflix"
+          - "-lc++"
+          - "-lresolv"
+          - "-lz"
+          - "-lbz2"
+          - "-liconv"
+        ENABLE_BITCODE: NO
+    dependencies:
+      - package: MPVKit
+        product: MPVKit
+      - sdk: WebKit.framework
+      - sdk: AVFoundation.framework
+      - sdk: AudioToolbox.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreVideo.framework
+      - sdk: MediaPlayer.framework
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: VideoToolbox.framework
+    info:
+      path: Flix/Info.plist
+      properties:
+        CFBundleDisplayName: Flix
+        CFBundleName: Flix
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSRequiresIPhoneOS: true
+        UILaunchScreen:
+          UIColorName: ""
+        UIRequiredDeviceCapabilities:
+          - arm64
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UIViewControllerBasedStatusBarAppearance: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIBackgroundModes:
+          - audio
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true

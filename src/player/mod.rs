@@ -6,6 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub mod detect;
+pub mod embedded;
 pub mod install;
 pub mod ipc;
 
@@ -147,6 +148,7 @@ fn default_languages() -> Vec<String> {
 
 pub struct ManagedPlayer {
     child: Option<Child>,
+    embedded: Option<embedded::EmbeddedSession>,
     started: Instant,
 }
 
@@ -177,11 +179,23 @@ impl ManagedPlayer {
     pub fn new(child: Child) -> Self {
         Self {
             child: Some(child),
+            embedded: None,
+            started: Instant::now(),
+        }
+    }
+
+    pub fn new_embedded(session: embedded::EmbeddedSession) -> Self {
+        Self {
+            child: None,
+            embedded: Some(session),
             started: Instant::now(),
         }
     }
 
     pub fn poll_exit(&mut self) -> Result<Option<PlayerExit>> {
+        if let Some(embedded) = self.embedded.as_ref() {
+            return Ok(embedded.poll_exit());
+        }
         let Some(child) = self.child.as_mut() else {
             return Ok(None);
         };
@@ -204,6 +218,12 @@ impl ManagedPlayer {
 
     /// Detects immediate process failures. This does not confirm video decoding.
     pub async fn wait_for_startup(&mut self) -> Result<()> {
+        if self.embedded.is_some() {
+            return match self.poll_exit()? {
+                Some(exit) => Err(PlayerStartupError(exit).into()),
+                None => Ok(()),
+            };
+        }
         loop {
             if let Some(exit) = self.poll_exit()? {
                 return Err(PlayerStartupError(exit).into());
@@ -216,6 +236,9 @@ impl ManagedPlayer {
     }
 
     pub fn has_exited(&mut self) -> Result<bool> {
+        if let Some(embedded) = self.embedded.as_ref() {
+            return Ok(embedded.has_exited());
+        }
         match self.child.as_mut() {
             Some(child) => Ok(child.try_wait()?.is_some()),
             None => Ok(true),
@@ -230,6 +253,9 @@ impl ManagedPlayer {
     }
 
     pub fn stop(&mut self) -> Result<()> {
+        if let Some(embedded) = self.embedded.take() {
+            return embedded.stop();
+        }
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
@@ -366,6 +392,10 @@ pub fn file_uri(path: &Path) -> String {
 }
 
 pub fn launch(p: &Player, url: &str, opts: &PlaybackOptions) -> Result<ManagedPlayer> {
+    if embedded::is_embedded_player(p) {
+        let session = embedded::EmbeddedSession::launch(url, opts)?;
+        return Ok(ManagedPlayer::new_embedded(session));
+    }
     let mut command = command(p, url, opts);
     if !opts.show_output {
         command.stdout(Stdio::null()).stderr(Stdio::null());

@@ -199,7 +199,8 @@
   $: otherStreams = streams.filter((s) => s !== recommendedStream);
 
   let playbackTarget: 'external' | 'browser' = 'external';
-  $: if (selectedItem.is_anime && playbackTarget === 'browser') playbackTarget = 'external';
+  const isIosEmbedded = typeof navigator !== 'undefined' && navigator.userAgent.includes('FlixIOS');
+  $: if ((selectedItem.is_anime || isIosEmbedded) && playbackTarget === 'browser') playbackTarget = 'external';
 
   function mediaRefFor(stream: StreamSummary): PlayCommand['media_ref'] {
     if (selectedItem.media_type === 'movie') {
@@ -422,31 +423,33 @@
     <div class="section-heading">
       <div class="sources-heading-row">
         <h3 id="sources-heading">{selectedEpisode ? formatEpisodeTitle(selectedEpisode) : 'Choose a source'}</h3>
-        <div class="player-toggle" role="group" aria-label="Play with">
-          <button
-            type="button"
-            class="player-toggle-btn"
-            class:active={playbackTarget === 'external'}
-            disabled={isPreparingPlayback}
-            on:click={() => (playbackTarget = 'external')}
-          >
-            External
-          </button>
-          <button
-            type="button"
-            class="player-toggle-btn"
-            class:active={playbackTarget === 'browser'}
-            disabled={isPreparingPlayback || selectedItem?.is_anime}
-            title={selectedItem?.is_anime ? 'Anime needs the external player' : 'Browser preview'}
-            on:click={() => (playbackTarget = 'browser')}
-          >
-            Browser
-          </button>
-        </div>
+        {#if !isIosEmbedded}
+          <div class="player-toggle" role="group" aria-label="Play with">
+            <button
+              type="button"
+              class="player-toggle-btn"
+              class:active={playbackTarget === 'external'}
+              disabled={isPreparingPlayback}
+              on:click={() => (playbackTarget = 'external')}
+            >
+              External
+            </button>
+            <button
+              type="button"
+              class="player-toggle-btn"
+              class:active={playbackTarget === 'browser'}
+              disabled={isPreparingPlayback || selectedItem?.is_anime}
+              title={selectedItem?.is_anime ? 'Anime needs the external player' : 'Browser preview'}
+              on:click={() => (playbackTarget = 'browser')}
+            >
+              Browser
+            </button>
+          </div>
+        {/if}
       </div>
-      {#if playbackTarget === 'browser'}
+      {#if !isIosEmbedded && playbackTarget === 'browser'}
         <p>MP4 and WebM only. Anime needs the external player until verified track selection is available.</p>
-      {:else if selectedItem?.is_anime}
+      {:else if !isIosEmbedded && selectedItem?.is_anime}
         <p>Original audio and English subtitles. Anime currently needs an external player.</p>
       {/if}
     </div>
